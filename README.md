@@ -71,4 +71,4 @@ For development, run `tuist generate` and open `QuotaBar.xcworkspace`. Run tests
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE)
