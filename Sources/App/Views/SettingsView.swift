@@ -114,6 +114,13 @@ struct SettingsContentView: View {
             VStack(spacing: 8) {
                 ForEach(monitor.allProviders, id: \.id) { provider in
                     providerRow(provider: provider)
+                    if provider.id == "muse", provider.isEnabled {
+                        Text("QuotaBar reads the Muse CLI's OAuth credentials from its configured file or Keychain, including the existing standing API key. It never creates credentials.")
+                            .font(.system(size: 10, design: theme.fontDesign))
+                            .foregroundStyle(theme.textTertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 30)
+                    }
 
                     if provider.id == ProviderID.claude, provider.isEnabled {
                         ClaudeConfigCard(provider: provider)

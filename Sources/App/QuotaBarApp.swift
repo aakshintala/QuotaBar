@@ -43,6 +43,7 @@ struct QuotaBarApp: App {
             provider("codex", "Codex", CodexAPIUsageProbe()),
             provider("cursor", "Cursor", CursorUsageProbe()),
             provider("opencode-go", "OpenCode Go", OpenCodeUsageProbe()),
+            provider("muse", "Muse", MuseUsageProbe()),
         ]
         settingsRepository.keepProviders(providers.map(\.id))
         AppLog.providers.info("Created \(providers.count) providers")

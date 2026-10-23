@@ -98,6 +98,8 @@ public final class QuotaMonitor {
 
     /// Handles snapshot update and alerts user if status changed
     private func handleSnapshotUpdate(provider: AIProvider, snapshot: UsageSnapshot) async {
+        // Missing data is not a healthy recovery and must not trigger a status alert.
+        guard !snapshot.quotas.isEmpty else { return }
         let previousStatus = previousStatuses[provider.id] ?? .healthy
         let newStatus = snapshot.overallStatus
 

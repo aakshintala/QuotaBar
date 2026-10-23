@@ -133,13 +133,16 @@ public enum QuotaFeedDTOMapper {
         } else if let error = provider.lastError {
             unavailable = error.localizedDescription
             throttledUntil = nil
+        } else if let snapshot, snapshot.quotas.isEmpty {
+            unavailable = "No current quota data"
+            throttledUntil = nil
         } else {
             unavailable = nil
             throttledUntil = nil
         }
 
         let quotas = snapshot?.quotas.map(mapQuota) ?? []
-        let status = snapshot?.overallStatus.feedKey ?? "healthy"
+        let status = snapshot?.quotas.isEmpty != false ? "unknown" : (snapshot?.overallStatus.feedKey ?? "healthy")
 
         return QuotaFeedProviderDTO(
             id: provider.id,

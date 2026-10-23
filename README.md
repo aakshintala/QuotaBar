@@ -1,6 +1,6 @@
 # QuotaBar
 
-A macOS menu bar app that shows how much of your AI coding subscriptions is left: Claude, Codex, Cursor and OpenCode Go. It can also serve the same numbers to Claude Code sessions and other local tools over a localhost feed.
+A macOS menu bar app that shows how much of your AI coding subscriptions is left: Claude, Codex, Cursor, OpenCode Go and Muse. It can also serve the same numbers to Claude Code sessions and other local tools over a localhost feed.
 
 QuotaBar began as a fork of [tddworks/ClaudeBar](https://github.com/tddworks/ClaudeBar) and was cut down to the providers above. Thanks to the ClaudeBar authors and contributors.
 
@@ -24,8 +24,9 @@ QuotaBar reads the credentials each provider's own tool already stores, so there
 | Codex | Codex CLI signed in (`~/.codex/auth.json`) |
 | Cursor | Cursor signed in on this Mac |
 | OpenCode Go | opencode signed in to OpenCode Go (`~/.local/share/opencode/auth.json`) |
+| Muse | Muse CLI OAuth login (`$XDG_CONFIG_HOME/muse/auth.json` or `~/.config/muse/auth.json`; `MUSE_AUTH_PATH` overrides) |
 
-Turn providers on or off in Settings. Settings are stored in `~/.quotabar/settings.json` and logs in `~/Library/Logs/QuotaBar/`.
+Turn providers on or off in Settings. For Muse, first sign in with `muse login`; QuotaBar reads the CLI's OAuth login read-only and requires the existing `providers.meta.api_key` as evidence that Muse completed its initial onboarding. QuotaBar never calls the undocumented key-issuance endpoint to create that key. A valid OAuth token without this standing key is reported separately with guidance to finish login in Muse. An inference key alone cannot fetch subscription quota. Muse quota requests are limited to one per login every five minutes; Meta may omit usage while its session window is idle. Settings are stored in `~/.quotabar/settings.json` and logs in `~/Library/Logs/QuotaBar/`.
 
 ## Quota for Claude Code agents
 

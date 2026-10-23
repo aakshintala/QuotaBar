@@ -25,6 +25,8 @@ enum ProviderVisualIdentityLookup {
             return scheme == .dark
                 ? Color(red: 0.52, green: 0.36, blue: 1.0)
                 : Color(red: 0.42, green: 0.28, blue: 1.0)
+        case "muse":
+            return scheme == .dark ? Color(red: 0.42, green: 0.56, blue: 0.94) : Color(red: 0.24, green: 0.38, blue: 0.78)
         default:
             return BaseTheme.purpleVibrant
         }
@@ -52,6 +54,8 @@ enum ProviderVisualIdentityLookup {
             secondaryColor = scheme == .dark
                 ? Color(red: 0.36, green: 0.20, blue: 0.90)
                 : Color(red: 0.30, green: 0.15, blue: 0.80)
+        case "muse":
+            secondaryColor = scheme == .dark ? Color(red: 0.68, green: 0.43, blue: 0.93) : Color(red: 0.54, green: 0.30, blue: 0.80)
         default:
             return LinearGradient(
                 colors: [BaseTheme.coralAccent, BaseTheme.pinkHot],
@@ -74,6 +78,7 @@ enum ProviderVisualIdentityLookup {
         case "codex": return "CodexIcon"
         case "cursor": return "CursorIcon"
         case "opencode-go": return "OpenCodeIcon"
+        case "muse": return "MuseIcon"
         default: return "QuestionIcon"
         }
     }
@@ -85,6 +90,7 @@ enum ProviderVisualIdentityLookup {
         case "codex": return "chevron.left.forwardslash.chevron.right"
         case "cursor": return "cursorarrow.rays"
         case "opencode-go": return "square.stack.3d.up.fill"
+        case "muse": return "infinity"
         default: return "questionmark.circle.fill"
         }
     }

@@ -61,6 +61,13 @@ public final class AIProvider: Identifiable {
             lastError = nil
             return newSnapshot
         } catch {
+            if case ProbeError.accountChanged = error {
+                snapshot = nil
+            } else if case ProbeError.staleSnapshot(let lastKnown, _) = error {
+                snapshot = lastKnown
+            } else if case ProbeError.noCurrentQuota = error {
+                snapshot = nil
+            }
             lastError = error
             throw error
         }

@@ -18,6 +18,18 @@ struct ProviderQuotaSection: View {
                 ForEach(snapshot.quotas, id: \.quotaType) { quota in
                     QuotaBucketRow(quota: quota)
                 }
+                if snapshot.quotas.isEmpty {
+                    Text("No current quota data")
+                        .font(.system(size: 12, design: theme.fontDesign))
+                        .foregroundStyle(theme.textTertiary)
+                        .padding(.leading, 12)
+                }
+                if provider.lastError != nil {
+                    Text("Showing last known quota; refresh unavailable")
+                        .font(.system(size: 10, design: theme.fontDesign))
+                        .foregroundStyle(theme.statusWarning)
+                        .padding(.leading, 12)
+                }
 
                 if let costUsage = snapshot.costUsage {
                     CostStatCard(costUsage: costUsage)

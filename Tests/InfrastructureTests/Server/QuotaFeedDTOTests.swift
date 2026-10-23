@@ -95,6 +95,20 @@ struct QuotaFeedDTOTests {
     }
 
     @Test
+    func `empty quota snapshot remains unknown in feed`() async {
+        let settings = makeSettings()
+        let probe = MockUsageProbe()
+        given(probe).probe().willReturn(UsageSnapshot(providerId: "muse", quotas: [], capturedAt: Self.fixedNow))
+        let muse = AIProvider(id: "muse", name: "Muse", probe: probe, settingsRepository: settings)
+        _ = try? await muse.refresh()
+
+        let provider = QuotaFeedDTO.make(from: [muse], at: Self.fixedNow).providers[0]
+        #expect(provider.status == "unknown")
+        #expect(provider.unavailable == "No current quota data")
+        #expect(provider.quotas.isEmpty)
+    }
+
+    @Test
     func `lastError populates unavailable`() async {
         let settings = makeSettings()
         let probe = MockUsageProbe()

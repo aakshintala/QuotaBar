@@ -105,6 +105,19 @@ struct AIProviderTests {
         #expect(claude.lastError != nil)
     }
 
+    @Test
+    func `provider keeps stale snapshot and error when refresh fails with a last known observation`() async {
+        let settings = makeSettingsRepository()
+        let stale = UsageSnapshot(providerId: "muse", quotas: [UsageQuota(percentRemaining: 50, quotaType: .weekly, providerId: "muse")], capturedAt: Date())
+        let mockProbe = MockUsageProbe()
+        given(mockProbe).probe().willThrow(ProbeError.staleSnapshot(stale, reason: "Muse refresh failed"))
+        let muse = AIProvider(id: "muse", name: "Muse", probe: mockProbe, settingsRepository: settings)
+
+        do { _ = try await muse.refresh() } catch { }
+        #expect(muse.snapshot == stale)
+        #expect(muse.lastError?.localizedDescription == "Muse refresh failed")
+    }
+
     // MARK: - Syncing State
 
     @Test

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-QuotaBar is a macOS menu bar app (Swift 6, SwiftUI, macOS 15+) that shows how much of each AI coding subscription is left and serves the same data to other tools over a localhost HTTP feed. It started as a fork of ClaudeBar and was cut down to four providers; read the code, not old upstream docs or issues.
+QuotaBar is a macOS menu bar app (Swift 6, SwiftUI, macOS 15+) that shows how much of each AI coding subscription is left and serves the same data to other tools over a localhost HTTP feed. It started as a fork of ClaudeBar and was cut down to five providers; read the code, not old upstream docs or issues.
 
 ## Providers
 
@@ -10,8 +10,9 @@ QuotaBar is a macOS menu bar app (Swift 6, SwiftUI, macOS 15+) that shows how mu
 | `codex` | Codex | `CodexAPIUsageProbe` | `~/.codex/auth.json` |
 | `cursor` | Cursor | `CursorUsageProbe` | token from Cursor's `state.vscdb` via `sqlite3` |
 | `opencode-go` | OpenCode Go | `OpenCodeUsageProbe` | `$XDG_DATA_HOME/opencode/auth.json` |
+| `muse` | Muse | `MuseUsageProbe` | Muse CLI OAuth: `$XDG_CONFIG_HOME/muse/auth.json` or `~/.config/muse/auth.json` |
 
-All four call HTTP APIs; nothing drives an interactive CLI. The id is the settings key and the feed id: never change one that has shipped.
+All five call HTTP APIs; nothing drives an interactive CLI. The id is the settings key and the feed id: never change one that has shipped.
 
 The Keychain item `Claude Code-credentials` belongs to Claude Code and trusts only `/usr/bin/security`, so the Claude loader reads and writes it through `security` (over stdin, never argv). Calling `SecItem*` on it would prompt the user.
 
@@ -26,6 +27,7 @@ The Keychain item `Claude Code-credentials` belongs to Claude Code and trusts on
 - `QuotaMonitor` is the single source of truth. Views read it directly; there is no view model.
 - `QuotaMonitor.refresh(force:)` refreshes all enabled providers concurrently, skips a snapshot younger than `minimumSnapshotAge` (60 s) unless forced, and joins a refresh already in flight. The popover, the refresh button (`force: true`), the background loop and the feed all go through it.
 - `ClaudeAPIUsageProbe` also caches its snapshot for `snapshotCacheTTL` (300 s), even on a forced refresh, because the usage endpoint rate-limits hard.
+- Muse persists its per-login cooldown and last quota observation under `~/.quotabar/muse`; a failed refresh keeps any unexpired observation visible with the failure in `lastError`, including after restart. Its CLI OAuth record must also contain an already-issued `providers.meta.api_key`; QuotaBar deliberately does not invoke Muse's undocumented key-issuance endpoint.
 - `UsageQuota.status` is pace-aware, so the popover, alerts and feed agree on healthy/warning/critical/depleted.
 - A quota is a percent meter, a balance meter (`balanceRemaining`/`balanceUsed`/`balanceCap` in `usd` or `credits`), or a units count (`unitsUsed`/`unitsLimit`). Probes set `resetsAt`; reset text is formatted once, at the edge.
 
@@ -37,7 +39,7 @@ Every provider is the one `AIProvider` class; what differs is its `UsageProbe`. 
 2. Register it with one line in the `providers` list in `Sources/App/QuotaBarApp.swift`.
 3. Add its colour, symbol and icon asset to `Sources/App/Views/ProviderVisualIdentity.swift` and `Assets.xcassets`.
 
-Add a settings sub-protocol of `ProviderSettingsRepository` only when the provider needs its own setting. API keys (OpenRouter is next, Muse later) belong in the Keychain, in items QuotaBar creates and reads with `SecItem*`, not in the settings file or UserDefaults. That credential store does not exist yet; the first API-key provider builds it.
+Add a settings sub-protocol of `ProviderSettingsRepository` only when the provider needs its own setting. API keys (OpenRouter is next) belong in the Keychain, in items QuotaBar creates and reads with `SecItem*`, not in the settings file or UserDefaults. That credential store does not exist yet; the first API-key provider builds it. Muse uses the CLI's existing OAuth file; its inference key alone cannot fetch subscription quota.
 
 ## Settings
 
