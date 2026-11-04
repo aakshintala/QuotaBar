@@ -1,0 +1,36 @@
+[package]
+name = "quotabard"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "disposable-keychain-proof"
+path = "examples/disposable-keychain-proof.rs"
+
+[dependencies]
+base64 = "=0.23.1"
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+chrono = { version = "=0.4.45", default-features = false, features = ["clock", "std"] }
+getrandom = "=0.4.3"
+http-body-util = "=0.1.3"
+httpdate = "=1.0.3"
+hyper = { version = "=1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "=0.1.21", default-features = false, features = ["http1", "server", "service", "tokio"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json", "form"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+tokio = { version = "=1.53.1", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "=1.53.1", features = ["macros", "test-util"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation-sys = "=0.8.7"
+security-framework-sys = "=2.17.0"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "$(uname -s)" in
+  Linux) binary="$HOME/.local/bin/quotabard" ;;
+  Darwin) binary="$HOME/Library/Application Support/QuotaBar/bin/quotabard" ;;
+  *) printf 'aiquota: unsupported operating system; install quotabard for macOS or Linux.\n' >&2; exit 2 ;;
+esac
+
+if [[ ! -x "$binary" ]]; then
+  printf 'aiquota: quotabard is missing or not executable at %s; install the QuotaBar daemon first.\n' "$binary" >&2
+  exit 127
+fi
+
+exec "$binary" quota "$@"

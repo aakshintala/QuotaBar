@@ -1,0 +1,13 @@
+# Managed by QuotaBar service scripts. Do not edit.
+
+[Unit]
+Description=QuotaBar quota daemon
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/quotabard
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

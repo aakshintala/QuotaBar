@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+if ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' 'QuotaBar service scripts require Python 3; no changes were made.' >&2
+    exit 1
+fi
+script_dir=${0%/*}
+if [ "$script_dir" = "$0" ]; then
+    printf '%s\n' 'Invoke this script by an explicit path.' >&2
+    exit 1
+fi
+script_dir=$(CDPATH='' cd -P -- "$script_dir" && pwd -P)
+exec python3 "$script_dir/common.py" remove "$@"
