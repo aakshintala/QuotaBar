@@ -1,12 +1,12 @@
 # Rust migration implementation status
 
-The Rust implementation is integrated and validated offline on macOS and Linux. It is not deployed. The Swift app and installed consumers remain unchanged.
+The Rust implementation is integrated and validated offline on macOS and Linux. The [Linux native service](rust-migration-linux-service-acceptance.md) is installed, enabled and running, with five fresh providers and installed CLI cache reuse verified. Mac deployment remains pending. Swift and installed consumers remain unchanged.
 
 ## Latest offline build and rollout order
 
 The signed-Mac repair snapshot passed formatting, warning-denied Clippy, release daemon/library builds and all three example builds on both hosts. macOS passed 270 tests; Linux passed 259. The totals differ because Mac-only Keychain tests are excluded on Linux. Ordinary checks used fakes and executed no native proof or live provider request.
 
-The final 51-file source manifest has SHA-256 `49a11b054500c47c14e7e7efcc6ff87f9763e2c5bcd979f7f2894c57bc8fb4b5` and matched both hosts. Independent scoped review approved the Linux production daemon for Standards and Spec. The production repairs are fixed. Two Mac-only proof-tool requirements remain open: emit the observed locked-update outcome and check created-item destinations. Neither is reachable from the installed Linux daemon. These offline results and Linux source approval are not deployment or owner-Keychain acceptance.
+The final 51-file source manifest has SHA-256 `49a11b054500c47c14e7e7efcc6ff87f9763e2c5bcd979f7f2894c57bc8fb4b5` and matched both hosts. Independent scoped review approved the Linux production daemon for Standards and Spec. The production repairs are fixed. The two Mac-only proof-tool requirements—emitting the observed locked-update outcome and checking created-item destinations—were subsequently fixed and independently approved, with 271 Mac tests passing. The isolated cross-identity controller still needs repair verification; no native proof has run. The proof tools are not reachable from the installed Linux daemon. These offline results and Linux source approval are not deployment or owner-Keychain acceptance.
 
 The owner approved a Linux-first rollout: checkpoint reviewed Rust with Swift retained, then install and accept Linux while isolated Mac tests continue in parallel. Do not wait for Swift retirement or PR completion to make the service usable. Mac tests must use the [disposable-account boundary](../plans/rust-native-proof-account-isolation.md); signing, native execution and real credential writes remain separately gated. The standard test account is prepared, but no native test has run.
 
@@ -86,6 +86,6 @@ The following remain separate gates, not implied by passing offline tests or rel
 - Actual OAuth credential-write acceptance. Normal renewal is now authorized for live checks, but the Mac run did not observe it being exercised. Conditional writes and interleavings were tested with fixtures.
 - Native systemd and LaunchAgent lifecycle and native macOS logging acceptance for the new `quotabard` services. The separate owner-approved old-tunnel unload is not acceptance of those services.
 - Complete production-binary resource acceptance. Linux production resources and all-five provider verification completed in separate runs. The Mac run measured the finished daemon with two working providers, not all five; its idle window may include installed Pi polling. Neither host's figures establish a universal resource ceiling or absolute isolated idleness. Earlier synthetic resource reports remain distinct.
-- Service installation, Linux lingering, installed-client changes, producer replacement and cutover.
+- Mac service installation and installed-client cutover. Linux installation and bounded live acceptance have passed; restart/update/rollback/removal checks remain pending. Linux's pre-existing lingering setting was preserved without change.
 
 No source result authorizes those operations. The Claude `/usr/bin/security` credential fallback remains blocked because no-dialog behaviour is not guaranteed; its file-backed route is implemented.

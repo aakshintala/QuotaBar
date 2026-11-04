@@ -12,9 +12,21 @@ fn main() -> ExitCode {
     #[cfg(target_os = "macos")]
     {
         match quotabard::keychain_proof::native::run() {
-            Ok(()) => {
+            Ok(summary) => {
+                let outcome = |value| match value {
+                    quotabard::keychain_proof::LockedModifyOutcome::Success => "success",
+                    quotabard::keychain_proof::LockedModifyOutcome::Refused => "refused",
+                };
                 println!(
-                    "Disposable Keychain proof passed: unlocked raw modify succeeded with exact read-back; the read-denied fixture was not modified; locked raw modify had a recognized no-UI outcome and exact post-unlock data verification."
+                    "{}",
+                    serde_json::json!({
+                        "proof": "disposable-keychain",
+                        "allowed_modify": outcome(summary.allowed_modify),
+                        "locked_modify_attempted": summary.locked_modify_attempted,
+                        "locked_modify": outcome(summary.locked_modify),
+                        "locked_after": summary.locked_after,
+                        "data_verified": summary.data_verified,
+                    })
                 );
                 ExitCode::SUCCESS
             }

@@ -1,6 +1,6 @@
 use super::{
-    AdapterError, FixtureDirectory, KeychainAdapter, ProofError, ReadFailure, ReadFailureKind,
-    WriteFailure, WriteFailureKind,
+    AdapterError, FixtureDirectory, KeychainAdapter, ProofError, ProofSummary, ReadFailure,
+    ReadFailureKind, WriteFailure, WriteFailureKind,
 };
 use core_foundation_sys::array::{CFArrayCreate, CFArrayRef, kCFTypeArrayCallBacks};
 use core_foundation_sys::base::{CFRelease, OSStatus, kCFAllocatorDefault};
@@ -30,6 +30,15 @@ const KEYCHAIN_PASSWORD: &[u8] = b"synthetic-quotabar-proof-keychain-password";
 const ACCESS_DESCRIPTOR: &[u8] = b"quotabar-proof read-restricted item\0";
 
 unsafe extern "C" {
+    fn SecKeychainItemCopyKeychain(
+        item: SecKeychainItemRef,
+        keychain: *mut SecKeychainRef,
+    ) -> OSStatus;
+    fn SecKeychainGetPath(
+        keychain: SecKeychainRef,
+        path_length: *mut u32,
+        path_name: *mut i8,
+    ) -> OSStatus;
     fn SecKeychainItemCreateFromContent(
         item_class: u32,
         attributes: *mut SecKeychainAttributeList,
@@ -131,6 +140,10 @@ impl KeychainAdapter for NativeAdapter {
             release_if_nonnull(item);
             return Err(AdapterError::OperationFailed);
         }
+        if !item_belongs_to_fixture(item, fixture.keychain) {
+            release_if_nonnull(item);
+            return Err(AdapterError::OperationFailed);
+        }
         fixture.allowed_item.set(item);
         Ok(())
     }
@@ -193,6 +206,10 @@ impl KeychainAdapter for NativeAdapter {
         };
         release_if_nonnull(access);
         if status != errSecSuccess || item.is_null() {
+            release_if_nonnull(item);
+            return Err(AdapterError::OperationFailed);
+        }
+        if !item_belongs_to_fixture(item, fixture.keychain) {
             release_if_nonnull(item);
             return Err(AdapterError::OperationFailed);
         }
@@ -315,6 +332,33 @@ impl KeychainAdapter for NativeAdapter {
     }
 }
 
+const KEYCHAIN_PATH_CAPACITY: usize = 4096;
+
+fn item_belongs_to_fixture(item: SecKeychainItemRef, fixture_keychain: SecKeychainRef) -> bool {
+    let mut item_keychain = ptr::null_mut();
+    let status = unsafe { SecKeychainItemCopyKeychain(item, &mut item_keychain) };
+    if status != errSecSuccess || item_keychain.is_null() {
+        release_if_nonnull(item_keychain);
+        return false;
+    }
+    let item_path = keychain_path(item_keychain);
+    release_if_nonnull(item_keychain);
+    let fixture_path = keychain_path(fixture_keychain);
+    matches!((item_path, fixture_path), (Ok(actual), Ok(expected)) if actual == expected)
+}
+
+fn keychain_path(keychain: SecKeychainRef) -> Result<Vec<u8>, AdapterError> {
+    let mut buffer = vec![0_u8; KEYCHAIN_PATH_CAPACITY];
+    let mut length = u32::try_from(buffer.len()).map_err(|_| AdapterError::OperationFailed)?;
+    let status = unsafe { SecKeychainGetPath(keychain, &mut length, buffer.as_mut_ptr().cast()) };
+    let length = usize::try_from(length).map_err(|_| AdapterError::OperationFailed)?;
+    if status != errSecSuccess || length > buffer.len() {
+        return Err(AdapterError::OperationFailed);
+    }
+    buffer.truncate(length);
+    Ok(buffer)
+}
+
 fn to_u32(value: usize) -> Result<u32, AdapterError> {
     u32::try_from(value).map_err(|_| AdapterError::OperationFailed)
 }
@@ -357,7 +401,7 @@ fn release_if_nonnull<T>(reference: *const T) {
     }
 }
 
-pub fn run() -> Result<(), ProofError> {
+pub fn run() -> Result<ProofSummary, ProofError> {
     let location = FixtureDirectory::create().map_err(|_| ProofError::UnsafeFixturePath)?;
     let mut adapter = NativeAdapter;
     super::run(&mut adapter, &location)

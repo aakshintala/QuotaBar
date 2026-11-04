@@ -40,6 +40,21 @@ pub struct WriteFailure {
     pub kind: WriteFailureKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockedModifyOutcome {
+    Success,
+    Refused,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProofSummary {
+    pub allowed_modify: LockedModifyOutcome,
+    pub locked_modify_attempted: bool,
+    pub locked_modify: LockedModifyOutcome,
+    pub locked_after: bool,
+    pub data_verified: bool,
+}
+
 pub trait KeychainAdapter {
     type Fixture;
 
@@ -124,7 +139,7 @@ impl std::fmt::Display for ProofError {
 pub fn run<A: KeychainAdapter>(
     adapter: &mut A,
     location: &FixtureDirectory,
-) -> Result<(), ProofError> {
+) -> Result<ProofSummary, ProofError> {
     location
         .validate()
         .map_err(|_| ProofError::UnsafeFixturePath)?;
@@ -192,6 +207,7 @@ pub fn run<A: KeychainAdapter>(
         adapter.read(&fixture, ALLOWED_SERVICE, FIXTURE_ACCOUNT),
         ProofError::LockedReadWasNotDenied,
     )?;
+    let allowed_modify = LockedModifyOutcome::Success;
     let modify_result = adapter.modify_control(&fixture, ALLOWED_SECRET);
     let locked_after_modify = adapter
         .fixture_is_locked(&fixture)
@@ -202,11 +218,11 @@ pub fn run<A: KeychainAdapter>(
     adapter
         .unlock_fixture(&fixture)
         .map_err(|_| ProofError::FixtureUnlockFailed)?;
-    let expected = match modify_result {
-        Ok(()) => ALLOWED_SECRET,
+    let (locked_modify, expected) = match modify_result {
+        Ok(()) => (LockedModifyOutcome::Success, ALLOWED_SECRET),
         Err(WriteFailure {
             kind: WriteFailureKind::RecognizedRefusal,
-        }) => ALLOWED_UPDATED_SECRET,
+        }) => (LockedModifyOutcome::Refused, ALLOWED_UPDATED_SECRET),
         Err(WriteFailure {
             kind: WriteFailureKind::Other,
         }) => {
@@ -220,7 +236,14 @@ pub fn run<A: KeychainAdapter>(
         expected,
         ProofError::LockedModifyVerificationFailed,
         ProofError::LockedModifyDataMismatch,
-    )
+    )?;
+    Ok(ProofSummary {
+        allowed_modify,
+        locked_modify_attempted: true,
+        locked_modify,
+        locked_after: locked_after_modify,
+        data_verified: true,
+    })
 }
 
 fn require_exact_read<A: KeychainAdapter>(
@@ -410,6 +433,7 @@ mod tests {
         acl_denial: ReadFailure,
         locked_denial: ReadFailure,
         fail_suppression: bool,
+        fail_allowed_creation: bool,
         locked_modify_succeeds: bool,
         corrupt_locked_success: bool,
         mutate_while_refused: bool,
@@ -431,6 +455,7 @@ mod tests {
                 acl_denial: denial,
                 locked_denial: denial,
                 fail_suppression: false,
+                fail_allowed_creation: false,
                 locked_modify_succeeds: false,
                 corrupt_locked_success: false,
                 mutate_while_refused: false,
@@ -467,7 +492,11 @@ mod tests {
         ) -> Result<(), AdapterError> {
             assert!(service.starts_with("quotabar-proof-"));
             self.events.push("add-allowed");
-            Ok(())
+            if self.fail_allowed_creation {
+                Err(AdapterError::OperationFailed)
+            } else {
+                Ok(())
+            }
         }
 
         fn add_restricted(
@@ -602,7 +631,12 @@ mod tests {
     fn proof_disables_interaction_first_and_scopes_reads_to_the_fixture() {
         let location = location();
         let mut adapter = FakeAdapter::passing();
-        run(&mut adapter, &location).expect("all synthetic proof cases pass");
+        let summary = run(&mut adapter, &location).expect("all synthetic proof cases pass");
+        assert_eq!(summary.allowed_modify, LockedModifyOutcome::Success);
+        assert_eq!(summary.locked_modify, LockedModifyOutcome::Refused);
+        assert!(summary.locked_modify_attempted);
+        assert!(summary.locked_after);
+        assert!(summary.data_verified);
         assert_eq!(
             adapter.events,
             [
@@ -634,6 +668,19 @@ mod tests {
     }
 
     #[test]
+    fn failed_item_creation_stops_before_follow_on_reads_or_modifies() {
+        let location = location();
+        let mut adapter = FakeAdapter::passing();
+        adapter.fail_allowed_creation = true;
+        assert_eq!(
+            run(&mut adapter, &location),
+            Err(ProofError::AllowedItemCreationFailed)
+        );
+        assert_eq!(adapter.events, ["ui-off", "create", "add-allowed"]);
+        assert!(adapter.reads.is_empty());
+    }
+
+    #[test]
     fn read_denial_requires_unlocked_positive_controls() {
         let location = location();
         let mut adapter = FakeAdapter::passing();
@@ -661,7 +708,12 @@ mod tests {
         let location = location();
         let mut adapter = FakeAdapter::passing();
         adapter.locked_modify_succeeds = true;
-        run(&mut adapter, &location).expect("consistent raw locked success is valid evidence");
+        let summary =
+            run(&mut adapter, &location).expect("consistent raw locked success is valid evidence");
+        assert_eq!(summary.locked_modify, LockedModifyOutcome::Success);
+        assert!(summary.locked_modify_attempted);
+        assert!(summary.locked_after);
+        assert!(summary.data_verified);
         assert_eq!(adapter.allowed, ALLOWED_SECRET);
         assert_eq!(
             adapter
@@ -677,7 +729,12 @@ mod tests {
     fn locked_refusal_requires_unchanged_bytes_and_other_errors_fail() {
         let location = location();
         let mut adapter = FakeAdapter::passing();
-        run(&mut adapter, &location).expect("recognized refusal with original bytes is valid");
+        let summary =
+            run(&mut adapter, &location).expect("recognized refusal with original bytes is valid");
+        assert_eq!(summary.locked_modify, LockedModifyOutcome::Refused);
+        assert!(summary.locked_modify_attempted);
+        assert!(summary.locked_after);
+        assert!(summary.data_verified);
         assert_eq!(adapter.allowed, ALLOWED_UPDATED_SECRET);
 
         let mut adapter = FakeAdapter::passing();

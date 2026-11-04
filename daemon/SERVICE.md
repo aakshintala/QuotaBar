@@ -1,6 +1,10 @@
-# Service preparation
+# Service management
 
-This lane is prepared, not installed. No real service-manager command was run, and no manager state was changed during implementation. Mock tests do not prove native manager acceptance, provider behavior, or quota refresh. The Mac Keychain owner-acceptance gate and the daemon cutover gate remain open.
+The Linux user service has since been installed and passed bounded live feed/CLI acceptance. See the [native Linux result](../docs/research/rust-migration-linux-service-acceptance.md) for the installed state and remaining lifecycle checks. Mac service installation remains pending.
+
+## Original preparation evidence
+
+The following records the original preparation lane, before native installation. This lane was prepared, not installed. No real service-manager command was run, and no manager state was changed during implementation. Mock tests do not prove native manager acceptance, provider behavior, or quota refresh. The Mac Keychain owner-acceptance gate and the daemon cutover gate remain open.
 
 The scripts install only a prebuilt `quotabard` binary for the current user. They never run the incoming binary to validate it. They do not themselves read, create, or change `~/.quotabar`, credentials, Keychain items, or provider settings. Install and update can start the daemon, which may then read its usual configuration and credentials and create its runtime control token. We did not exercise that runtime behavior.
 

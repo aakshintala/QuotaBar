@@ -2,7 +2,7 @@
 
 ## Review repair state
 
-Independent source review required changes to unsafe directory fallback, terminal read-back errors, native-boundary tests, file-refresh scope and the write-proof authorization model. Repairs and new joined gates are pending. The initial 255-test snapshot below is historical evidence, not a pass for current edited source.
+Independent source review required changes to unsafe directory fallback, terminal read-back errors, native-boundary tests, file-refresh scope and the write-proof authorization model. Production repairs passed 270 Mac and 259 Linux tests and Linux production source review; the native Linux service is now installed and live-verified. Final basic-proof reporting and destination-check repairs then passed independent source review and 271 Mac tests. The separate cross-identity controller/helper is undergoing its first repair wave. No native Mac proof has run. The initial 255-test snapshot below remains historical evidence.
 
 The [corrected write-proof ruling](../plans/rust-native-write-proof-ruling.md) separates native raw-update observations from fake-backed production read-before-write safeguards. Source analysis also found [uncertain cross-identity access preservation](rust-native-keychain-write-semantics.md#cli-access-preservation-boundary). No real Claude Keychain write, or provider run that could renew it, is allowed before synthetic cross-identity evidence, independent review and separate owner approval. No native write proof, signing or owner-item operation has run in this lane.
 
