@@ -279,11 +279,13 @@ func (p *Provider) loadCredentials() (string, error) {
 	if len(data) > maxCredentialBytes {
 		return "", errUnavailable
 	}
-	var root map[string]map[string]metaRecord
+	var root struct {
+		Providers map[string]metaRecord `json:"providers"`
+	}
 	if err := json.Unmarshal(data, &root); err != nil {
 		return "", errUnavailable
 	}
-	meta, ok := root["providers"]["meta"]
+	meta, ok := root.Providers["meta"]
 	if !ok || meta.Mechanism != "oauth" {
 		return "", errUnavailable
 	}

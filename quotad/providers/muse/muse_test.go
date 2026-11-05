@@ -34,7 +34,8 @@ func homeLookup(home string, extra map[string]string) func(string) string {
 // homeAuth writes meta to home/.config/muse/auth.json and returns its path.
 func homeAuth(t *testing.T, home string, meta map[string]any) string {
 	t.Helper()
-	data, err := json.Marshal(map[string]any{"providers": map[string]any{"meta": meta}})
+	// schema_version sits beside providers in the real CLI file.
+	data, err := json.Marshal(map[string]any{"schema_version": 1, "providers": map[string]any{"meta": meta}})
 	if err != nil {
 		t.Fatal(err)
 	}
