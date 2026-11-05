@@ -111,7 +111,7 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 	}
 	fp := tokenFingerprint(token)
 	dir := p.cacheDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return monitor.Snapshot{}, fmt.Errorf("muse: quota cache unavailable: %w", err)
 	}
 	// The effective hold is the later of the five-minute cooldown and a

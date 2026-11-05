@@ -2,7 +2,7 @@
 Description=quotad quota daemon (Go)
 
 [Service]
-ExecStart=%h/.local/bin/quotad -settings %h/.quotabar/quotad-trial.json
+ExecStart=%h/.local/bin/quotad
 Restart=on-failure
 RestartSec=10
 
