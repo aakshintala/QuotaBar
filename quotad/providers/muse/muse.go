@@ -38,13 +38,13 @@ const (
 // errRedirectRefused aborts any redirect of the token-bearing request.
 var errRedirectRefused = errors.New("muse: redirects are refused")
 
-// Keychain failure sentinels: the default reader wraps process errors, so
-// tests and callers map failures through these instead of status codes.
+// Keychain failure sentinels, aliased to creds so callers map the same
+// values production KeychainRead returns from the security exit statuses.
 var (
 	// ErrKeychainNotFound means the CLI's Keychain item does not exist.
-	ErrKeychainNotFound = errors.New("muse: keychain item not found")
+	ErrKeychainNotFound = creds.ErrKeychainNotFound
 	// ErrKeychainDenied means the Keychain read would prompt or was denied.
-	ErrKeychainDenied = errors.New("muse: keychain access denied")
+	ErrKeychainDenied = creds.ErrKeychainDenied
 )
 
 // Option customizes a Provider.
@@ -114,8 +114,11 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return monitor.Snapshot{}, fmt.Errorf("muse: quota cache unavailable: %w", err)
 	}
-	if ts, ok := readStamp(filepath.Join(dir, fp+".request")); ok && now.Sub(ts) < cooldown {
-		return monitor.Snapshot{}, &monitor.RateLimitedError{RetryAt: ts.Add(cooldown)}
+	// The effective hold is the later of the five-minute cooldown and a
+	// persisted 429 retry time, so a short cooldown cannot cut a longer
+	// server backoff short after a restart.
+	if retryAt, ok := p.nextRetry(fp, now); ok {
+		return monitor.Snapshot{}, &monitor.RateLimitedError{RetryAt: retryAt}
 	}
 	// Reserve the cooldown before the request, so a failure also consumes
 	// it and a concurrent Swift app sees the same bound.
@@ -125,6 +128,15 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 	}
 	snap, err := p.request(ctx, token, now)
 	if err != nil {
+		var rl *monitor.RateLimitedError
+		if errors.As(err, &rl) {
+			// Persist the server's retry time so a later fetch past the
+			// cooldown still waits for it.
+			retry := filepath.Join(dir, fp+".retry")
+			if werr := creds.WriteFileAtomic(retry, []byte(strconv.FormatInt(rl.RetryAt.UnixNano(), 10))); werr != nil {
+				slog.Warn("muse: quota retry not persisted", "err", werr)
+			}
+		}
 		if prev, ok := p.loadPersisted(fp, now); ok && !p.mem {
 			// First fetch after a restart: no in-memory snapshot exists
 			// yet, so serve the unexpired persisted observation and log
@@ -134,11 +146,52 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 		}
 		return monitor.Snapshot{}, err
 	}
+	// A quota-less response must not wipe a previous observation: the
+	// monitor keeps its snapshot when Fetch errors.
+	if len(snap.Quotas) == 0 && (p.mem || p.hasPersisted(fp, now)) {
+		return monitor.Snapshot{}, errors.New("Muse has not returned current quota data; showing the last known reading.")
+	}
 	if err := p.savePersisted(fp, snap); err != nil {
 		slog.Warn("muse: quota observation not persisted", "err", err)
 	}
+	// A fresh reading lifts any earlier server backoff.
+	_ = os.Remove(filepath.Join(dir, fp+".retry"))
 	p.mem = true
 	return snap, nil
+}
+
+// nextRetry reports the effective fetch hold: the later of the cooldown
+// stamp and a persisted 429 retry time, when still in the future.
+func (p *Provider) nextRetry(fp string, now time.Time) (time.Time, bool) {
+	dir := p.cacheDir()
+	var best time.Time
+	ok := false
+	if ts, found := readStamp(filepath.Join(dir, fp+".request")); found && now.Before(ts.Add(cooldown)) {
+		best, ok = ts.Add(cooldown), true
+	}
+	if rt, found := readRetry(filepath.Join(dir, fp+".retry")); found && now.Before(rt) && (!ok || rt.After(best)) {
+		best, ok = rt, true
+	}
+	return best, ok
+}
+
+// hasPersisted reports whether an unexpired observation is on disk.
+func (p *Provider) hasPersisted(fp string, now time.Time) bool {
+	_, ok := p.loadPersisted(fp, now)
+	return ok
+}
+
+// readRetry parses a persisted 429 retry time (Unix nanos).
+func readRetry(path string) (time.Time, bool) {
+	data, err := creds.ReadFile(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	nanos, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(0, nanos).UTC(), true
 }
 
 // sharedClient refuses redirects of the token-bearing request. http.Client
@@ -212,9 +265,14 @@ var errUnavailable = errors.New("Muse OAuth credentials are missing or malformed
 func (p *Provider) loadCredentials() (string, error) {
 	data, err := creds.ReadFile(p.authPath())
 	if err != nil {
-		// On darwin the login may live only in the Keychain.
-		if p.goos == "darwin" {
+		// On darwin the login may live only in the Keychain; fall back
+		// only for a missing file so a denied read cannot silently pick
+		// a different login.
+		if errors.Is(err, os.ErrNotExist) && p.goos == "darwin" {
 			return p.credentialsFromKeychain()
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("muse: credential file unreadable: %w", err)
 		}
 		return "", errUnavailable
 	}
@@ -271,9 +329,13 @@ func tokenFingerprint(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// authPath resolves the CLI auth file: absolute
-// $XDG_CONFIG_HOME/muse/auth.json, else ~/.config/muse/auth.json.
+// authPath resolves the CLI auth file: $MUSE_AUTH_PATH when set (as the
+// Swift loader checks first), else absolute $XDG_CONFIG_HOME/muse/auth.json,
+// else ~/.config/muse/auth.json.
 func (p *Provider) authPath() string {
+	if override := p.lookupEnv("MUSE_AUTH_PATH"); override != "" {
+		return override
+	}
 	if xdg := p.lookupEnv("XDG_CONFIG_HOME"); strings.HasPrefix(xdg, "/") {
 		return filepath.Join(xdg, "muse/auth.json")
 	}
@@ -297,7 +359,15 @@ func readStamp(path string) (time.Time, bool) {
 	if err != nil {
 		return time.Time{}, false
 	}
-	return time.Unix(int64(secs), 0).UTC(), true
+	return unixFloat(secs), true
+}
+
+// unixFloat converts float Unix seconds to time, keeping the fractional
+// part that int64 conversion would drop (Swift keeps it with
+// Date(timeIntervalSince1970:)).
+func unixFloat(secs float64) time.Time {
+	whole := int64(secs)
+	return time.Unix(whole, int64((secs-float64(whole))*1e9)).UTC()
 }
 
 // apiWindow is one quota window of the quota response.
@@ -352,7 +422,7 @@ func parseUsageResponse(data []byte, now time.Time) (monitor.Snapshot, error) {
 		}
 		var reset *time.Time
 		if win.w.ResetsAt != nil {
-			t := time.Unix(int64(*win.w.ResetsAt), 0).UTC()
+			t := unixFloat(*win.w.ResetsAt)
 			reset = &t
 		}
 		if q, ok := windowQuota(win.w.UsedPercent, reset, win.typ, now); ok {
@@ -380,7 +450,7 @@ type cachedSnapshot struct {
 
 // appleToTime converts Apple reference-date seconds to time.
 func appleToTime(secs float64) time.Time {
-	return time.Unix(int64(secs)+appleEpochOffset, 0).UTC()
+	return unixFloat(secs + appleEpochOffset)
 }
 
 // timeToApple converts time to Apple reference-date seconds.

@@ -750,3 +750,196 @@ func TestID(t *testing.T) {
 		t.Errorf("ID = %q", id)
 	}
 }
+
+func TestRetryAfterPersistsPastCooldown(t *testing.T) {
+	home := t.TempDir()
+	homeAuth(t, home, oauthMeta(nil))
+	now := testMoment
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	p := newProvider(t, home, srv.URL, &now, nil)
+	if _, err := p.Fetch(t.Context()); err == nil {
+		t.Fatal("expected rate-limited error")
+	}
+	// Past the five-minute cooldown but before the server's retry time:
+	// no new request may go out.
+	now = testMoment.Add(301 * time.Second)
+	_, err := p.Fetch(t.Context())
+	var rl *monitor.RateLimitedError
+	if !errors.As(err, &rl) {
+		t.Fatalf("error = %v, want RateLimitedError", err)
+	}
+	if !rl.RetryAt.Equal(testMoment.Add(3600 * time.Second)) {
+		t.Errorf("RetryAt = %v, want testMoment+3600s", rl.RetryAt)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestEmptyResponsePreservesPreviousObservation(t *testing.T) {
+	home := t.TempDir()
+	homeAuth(t, home, oauthMeta(nil))
+	now := testMoment
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			_, _ = w.Write([]byte(fixtureBody(t)))
+			return
+		}
+		_, _ = w.Write([]byte(`{"is_subs_active":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	p := newProvider(t, home, srv.URL, &now, nil)
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatalf("first Fetch: %v", err)
+	}
+	now = testMoment.Add(301 * time.Second)
+	if _, err := p.Fetch(t.Context()); err == nil {
+		t.Fatal("expected error for a quota-less response with a previous observation")
+	} else if !strings.Contains(err.Error(), "last known") {
+		t.Fatalf("error = %q, want last-known-reading hint", err)
+	}
+	// The persisted observation must be untouched: a fresh provider whose
+	// fetch fails past both cooldowns still serves the previous windows.
+	restart := testMoment.Add(650 * time.Second)
+	p2 := muse.New(
+		muse.WithBaseURL(deadServerURL(t)),
+		muse.WithNow(func() time.Time { return restart }),
+		muse.WithLookupEnv(homeLookup(home, nil)),
+	)
+	snap, err := p2.Fetch(t.Context())
+	if err != nil {
+		t.Fatalf("restart Fetch: %v", err)
+	}
+	if len(snap.Quotas) != 1 || snap.Quotas[0].Type.Kind != monitor.KindWeekly {
+		t.Fatalf("quotas = %+v, want persisted weekly only", snap.Quotas)
+	}
+}
+
+func TestAuthPathOverrideIsHonoured(t *testing.T) {
+	home := t.TempDir() // no auth file here
+	xdgDir := filepath.Join(t.TempDir(), "muse")
+	if err := os.MkdirAll(xdgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	xdgData, err := json.Marshal(map[string]any{
+		"providers": map[string]any{"meta": oauthMeta(map[string]any{"access_token": "dca:xdg-login-token"})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdgDir, "auth.json"), xdgData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	override := filepath.Join(t.TempDir(), "custom-auth.json")
+	overrideData, err := json.Marshal(map[string]any{"providers": map[string]any{"meta": oauthMeta(nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(override, overrideData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := testMoment
+	var hits atomic.Int64
+	var gotAuth string
+	srv := fixtureServer(t, fixtureBody(t), http.StatusOK, &hits, func(r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+	})
+	t.Cleanup(srv.Close)
+	p := muse.New(
+		muse.WithBaseURL(srv.URL),
+		muse.WithNow(func() time.Time { return now }),
+		muse.WithLookupEnv(homeLookup(home, map[string]string{
+			"XDG_CONFIG_HOME": filepath.Dir(xdgDir),
+			"MUSE_AUTH_PATH":  override,
+		})),
+		muse.WithGOOS("linux"),
+	)
+	if !p.Available() {
+		t.Error("Available = false with MUSE_AUTH_PATH set")
+	}
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	want := "Bearer " + oauthMeta(nil)["access_token"].(string)
+	if gotAuth != want {
+		t.Errorf("Authorization = %q, want override login %q", gotAuth, want)
+	}
+}
+
+func TestFractionalResetsArePreserved(t *testing.T) {
+	home := t.TempDir()
+	homeAuth(t, home, oauthMeta(nil))
+	now := testMoment
+	body := `{"is_subs_active":true,"subs_usage":{"window":{"used_percent":25,"resets_at":2000000300.5},"weekly":{"used_percent":40,"resets_at":2000600000.25}}}`
+	var hits atomic.Int64
+	srv := fixtureServer(t, body, http.StatusOK, &hits, nil)
+	t.Cleanup(srv.Close)
+	p := newProvider(t, home, srv.URL, &now, nil)
+	snap, err := p.Fetch(t.Context())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(snap.Quotas) != 2 {
+		t.Fatalf("quotas = %d, want 2", len(snap.Quotas))
+	}
+	wantSession := time.Unix(2000000300, int64(500*time.Millisecond)).UTC()
+	if !snap.Quotas[0].ResetsAt.Equal(wantSession) {
+		t.Errorf("session reset = %v, want %v", snap.Quotas[0].ResetsAt, wantSession)
+	}
+	wantWeekly := time.Unix(2000600000, int64(250*time.Millisecond)).UTC()
+	if !snap.Quotas[1].ResetsAt.Equal(wantWeekly) {
+		t.Errorf("weekly reset = %v, want %v", snap.Quotas[1].ResetsAt, wantWeekly)
+	}
+	// A restart past the cooldown serves the persisted weekly window with
+	// its fraction intact (the session window has expired by then).
+	restart := testMoment.Add(350 * time.Second)
+	p2 := muse.New(
+		muse.WithBaseURL(deadServerURL(t)),
+		muse.WithNow(func() time.Time { return restart }),
+		muse.WithLookupEnv(homeLookup(home, nil)),
+	)
+	served, err := p2.Fetch(t.Context())
+	if err != nil {
+		t.Fatalf("restart Fetch: %v", err)
+	}
+	if len(served.Quotas) != 1 || !served.Quotas[0].ResetsAt.Equal(wantWeekly) {
+		t.Errorf("persisted weekly reset = %v, want %v", served.Quotas, wantWeekly)
+	}
+}
+
+func TestDarwinFileErrorDoesNotFallBackToKeychain(t *testing.T) {
+	home := t.TempDir()
+	// A directory at the auth path: ReadFile fails with a non-NotExist error.
+	if err := os.MkdirAll(filepath.Join(home, ".config", "muse", "auth.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := testMoment
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no request should be made when credentials are unreadable")
+	}))
+	t.Cleanup(srv.Close)
+	p := muse.New(
+		muse.WithBaseURL(srv.URL),
+		muse.WithNow(func() time.Time { return now }),
+		muse.WithLookupEnv(homeLookup(home, nil)),
+		muse.WithGOOS("darwin"),
+		muse.WithKeychainRead(func(string, string) ([]byte, error) {
+			called = true
+			return []byte(`{"access_token":"dca:keychain-oauth","api_key":"testdata-standing-key-0000"}`), nil
+		}),
+	)
+	if _, err := p.Fetch(t.Context()); err == nil {
+		t.Fatal("expected credential-file error")
+	}
+	if called {
+		t.Error("Keychain must not be consulted for a non-NotExist file error")
+	}
+}
