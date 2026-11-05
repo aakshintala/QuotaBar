@@ -118,6 +118,11 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 	// persisted 429 retry time, so a short cooldown cannot cut a longer
 	// server backoff short after a restart.
 	if retryAt, ok := p.nextRetry(fp, now); ok {
+		// After a restart the monitor holds nothing yet, so show the
+		// persisted observation rather than an empty rate-limited row.
+		if prev, ok := p.loadPersisted(fp, now); ok && !p.mem {
+			return prev, nil
+		}
 		return monitor.Snapshot{}, &monitor.RateLimitedError{RetryAt: retryAt}
 	}
 	// Reserve the cooldown before the request, so a failure also consumes

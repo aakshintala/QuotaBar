@@ -314,6 +314,34 @@ func TestAfterRestartServesPersistedObservation(t *testing.T) {
 	}
 }
 
+func TestRestartInsideCooldownServesPersistedObservation(t *testing.T) {
+	home := t.TempDir()
+	p, hits := fetchOK(t, home, oauthMeta(nil), testMoment)
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatalf("first Fetch: %v", err)
+	}
+
+	// A restart inside the cooldown has no in-memory snapshot, so it serves
+	// the persisted observation instead of a bare rate-limit error, and does
+	// not hit the API.
+	second := testMoment.Add(30 * time.Second)
+	p2 := muse.New(
+		muse.WithBaseURL(deadServerURL(t)),
+		muse.WithNow(func() time.Time { return second }),
+		muse.WithLookupEnv(homeLookup(home, nil)),
+	)
+	snap, err := p2.Fetch(t.Context())
+	if err != nil {
+		t.Fatalf("restart Fetch: %v", err)
+	}
+	if len(snap.Quotas) == 0 {
+		t.Fatal("restart Fetch returned no quotas")
+	}
+	if hits.Load() != 1 {
+		t.Errorf("hits = %d, want 1", hits.Load())
+	}
+}
+
 func TestFailureWithMemoryReturnsError(t *testing.T) {
 	home := t.TempDir()
 	homeAuth(t, home, oauthMeta(nil))
