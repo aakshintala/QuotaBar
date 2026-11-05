@@ -256,6 +256,45 @@ func TestFetchRateLimitedHTTPDate(t *testing.T) {
 	}
 }
 
+func TestFetchRateLimitedZeroRetryAfter(t *testing.T) {
+	p, _ := withServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	before := time.Now()
+	_, err := p.Fetch(context.Background())
+	rl, ok := err.(*monitor.RateLimitedError)
+	if !ok {
+		t.Fatalf("expected RateLimitedError, got %T (%v)", err, err)
+	}
+	if d := rl.RetryAt.Sub(before); d < 0 || d > 10*time.Second {
+		t.Fatalf("Retry-After: 0 should mean retry now, got %v out", d)
+	}
+}
+
+func TestFetchDoesNotFollowRedirects(t *testing.T) {
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		body, _ := os.ReadFile("testdata/usage.json")
+		w.Write(body)
+	}))
+	t.Cleanup(target.Close)
+	p, _ := withServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	})
+	_, err := p.Fetch(context.Background())
+	if err == nil {
+		t.Fatal("a redirect must not be followed")
+	}
+	if strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("error must not carry the key: %v", err)
+	}
+	if targetHits != 0 {
+		t.Fatal("must not follow the redirect (it would forward the Authorization header)")
+	}
+}
+
 func TestFetchServerError(t *testing.T) {
 	p, _ := withServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

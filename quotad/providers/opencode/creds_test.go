@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // testEnv builds a LookupEnv from key/value pairs; missing keys read as unset.
@@ -144,13 +145,16 @@ func TestLoadKeyPrefersDatabase(t *testing.T) {
 		if !strings.Contains(sql, "'opencode-go'") || !strings.Contains(sql, "'opencode'") {
 			t.Errorf("SQL must prefer opencode-go over opencode: %s", sql)
 		}
-		out := "opencode-go\x1f" + `{"type":"key","key":"sk-db-key"}` + "\n"
+		// Both integrations present, in the ORDER BY preference order: the
+		// preferred opencode-go key must win, not an arbitrary row.
+		out := "opencode-go\x1f" + `{"type":"key","key":"sk-db-key"}` + "\n" +
+			"opencode\x1f" + `{"type":"key","key":"[REDACTED]"}` + "\n"
 		return []byte(out), nil, nil
 	})
 	p := New(WithHome(home), WithLookupEnv(testEnv()))
 	key, err := p.loadKey(context.Background())
 	if err != nil || key != "sk-db-key" {
-		t.Fatalf("got %q, %v", key, err)
+		t.Fatalf("preferred opencode-go key should win: got %q, %v", key, err)
 	}
 }
 
@@ -252,6 +256,39 @@ func TestLoadKeyMissingTableFallsBackToFile(t *testing.T) {
 	key, err := p.loadKey(context.Background())
 	if err != nil || key != "sk-file-key" {
 		t.Fatalf("got %q, %v", key, err)
+	}
+}
+
+func TestLoadKeyInaccessibleDatabaseFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	writeAuthFile(t, filepath.Join(home, ".local", "share"), "[REDACTED]")
+	opencodeDir := filepath.Join(home, ".local", "share", "opencode")
+	blocker := filepath.Join(opencodeDir, "blocker")
+	if err := os.WriteFile(blocker, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Stat fails with ENOTDIR here, not "not exist": the database is
+	// present but inaccessible, so falling back to auth.json could select
+	// a stale key. Fail closed instead.
+	p := New(WithHome(home), WithLookupEnv(testEnv(
+		"OPENCODE_DB", filepath.Join(blocker, "opencode.db"),
+	)))
+	stubSQLite(t, nil)
+	key, err := p.loadKey(context.Background())
+	if err == nil || key != "" {
+		t.Fatalf("inaccessible database must fail closed: got %q, %v", key, err)
+	}
+}
+
+func TestOAuthExpiryUsesFractionalNow(t *testing.T) {
+	now := time.Unix(1_754_000_000, 700*1_000_000)
+	// 0.2 s past expiry but within the same floored second: a floored
+	// comparison would wrongly accept this token.
+	if !oauthExpired(float64(1_754_000_000)*1000+500, now) {
+		t.Fatal("token 0.2s past expiry should count as expired")
+	}
+	if oauthExpired(float64(1_754_000_000)*1000+800, now) {
+		t.Fatal("token 0.1s before expiry should still be valid")
 	}
 }
 

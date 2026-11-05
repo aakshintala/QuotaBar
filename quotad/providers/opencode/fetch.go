@@ -68,15 +68,16 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 	}, nil
 }
 
-// rateLimited honors Retry-After (seconds or an HTTP date) and falls back
-// to a default delay, rejecting a misleading zero delay.
+// rateLimited honors Retry-After (seconds, including zero, or an HTTP
+// date) and falls back to a default delay only for a missing or invalid
+// header.
 func (p *Provider) rateLimited(resp *http.Response) *monitor.RateLimitedError {
 	delay := defaultRateDelay
 	if raw := strings.TrimSpace(resp.Header.Get("Retry-After")); raw != "" {
-		if secs, err := strconv.Atoi(raw); err == nil && secs > 0 {
+		if secs, err := strconv.Atoi(raw); err == nil && secs >= 0 {
 			delay = time.Duration(secs) * time.Second
-		} else if at, err := http.ParseTime(raw); err == nil && time.Until(at) > 0 {
-			delay = time.Until(at)
+		} else if at, err := http.ParseTime(raw); err == nil {
+			delay = max(time.Duration(0), time.Until(at))
 		}
 	}
 	return &monitor.RateLimitedError{RetryAt: time.Now().Add(delay)}

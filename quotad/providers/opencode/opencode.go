@@ -73,8 +73,14 @@ func New(opts ...Option) *Provider {
 		home:      home,
 		lookupEnv: os.LookupEnv,
 		baseURL:   DefaultBaseURL,
-		client:    &http.Client{},
-		timeout:   defaultTimeout,
+		// Never follow redirects: following would forward the Authorization
+		// header to wherever the redirect points.
+		client: &http.Client{
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		timeout: defaultTimeout,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -171,6 +177,11 @@ func (p *Provider) loadKey(ctx context.Context) (string, error) {
 			if !fallback {
 				return "", nil
 			}
+		} else if !os.IsNotExist(err) {
+			// The database is present but cannot be inspected: falling
+			// back to auth.json could select a stale key, so fail closed.
+			slog.Error("opencode: cannot inspect credential database")
+			return "", loginError()
 		}
 	}
 	return p.loadFileKey()
@@ -205,13 +216,13 @@ func (p *Provider) loadDBKey(ctx context.Context, db string) (string, bool, erro
 	case "key":
 		return validToken(cred.Key)
 	case "oauth":
-		if cred.Expires == nil || math.IsNaN(*cred.Expires) || math.IsInf(*cred.Expires, 0) {
+		// encoding/json already rejects non-finite numbers, so Expires is
+		// always finite here; only nil, negative and fractional values are
+		// possible failures.
+		if cred.Expires == nil || *cred.Expires < 0 || *cred.Expires != math.Trunc(*cred.Expires) {
 			return "", false, loginError()
 		}
-		if *cred.Expires < 0 || *cred.Expires != math.Trunc(*cred.Expires) {
-			return "", false, loginError()
-		}
-		if *cred.Expires/1000 <= float64(time.Now().Unix()) {
+		if oauthExpired(*cred.Expires, time.Now()) {
 			slog.Error("opencode: stored credential is expired")
 			return "", false, loginError()
 		}
@@ -220,6 +231,13 @@ func (p *Provider) loadDBKey(ctx context.Context, db string) (string, bool, erro
 		slog.Error("opencode: stored credential has unknown type")
 		return "", false, loginError()
 	}
+}
+
+// oauthExpired reports whether a millisecond OAuth expiry is at or past
+// now, comparing against fractional current time so a token is not
+// accepted for up to a second after expiry.
+func oauthExpired(expiresMs float64, now time.Time) bool {
+	return expiresMs/1000 <= float64(now.UnixNano())/1e9
 }
 
 // dbRow is one integration_id, value pair from the credential query.
