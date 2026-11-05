@@ -700,3 +700,89 @@ func TestSaveToKeychainOnRefresh(t *testing.T) {
 		t.Errorf("refresh token changed: %v", oauth)
 	}
 }
+
+func TestAvailableKeychainFallbackWithoutProcess(t *testing.T) {
+	home := t.TempDir()
+	oldRead := keychainRead
+	keychainRead = func(service, account string) ([]byte, error) {
+		t.Error("Available must not invoke a Keychain process call")
+		return nil, errors.New("no keychain in Available")
+	}
+	t.Cleanup(func() { keychainRead = oldRead })
+	p := New(WithHome(home), WithUseKeychain(true), WithKeychainAccount("tester"))
+	if !p.Available() {
+		t.Error("Available should be true when the Keychain may hold the login")
+	}
+}
+
+func TestFetchWritebackKeepsRotationDuringRedeem(t *testing.T) {
+	home := t.TempDir()
+	writeCreds(t, home, "old-access", "old-refresh", pastMs(time.Hour), "pro")
+	s := newStub(t)
+	s.usage = func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer cli-access" {
+			t.Errorf("usage auth = %q, want the CLI-rotated token", r.Header.Get("Authorization"))
+		}
+		w.Write([]byte(`{"five_hour": {"utilization": 10.0}}`))
+	}
+	s.refresh = func(w http.ResponseWriter, r *http.Request) {
+		// Claude Code rotates the file while the redeem is in flight.
+		writeCreds(t, home, "cli-access", "cli-refresh", futureMs(time.Hour), "pro")
+		w.Write([]byte(`{"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}`))
+	}
+	if _, err := testProvider(home, s, nil).Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(home, ".claude", ".credentials.json"))
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	oauth := decoded["claudeAiOauth"].(map[string]any)
+	if oauth["accessToken"] != "cli-access" || oauth["refreshToken"] != "cli-refresh" {
+		t.Errorf("rotation overwritten on writeback: %v", oauth)
+	}
+}
+
+func TestFetchInvalidGrantPicksUpRotatedCredentials(t *testing.T) {
+	home := t.TempDir()
+	writeCreds(t, home, "stale-access", "stale-refresh", pastMs(time.Hour), "pro")
+	s := newStub(t)
+	s.usage = func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer cli-access" {
+			t.Errorf("usage auth = %q, want the CLI-rotated token", r.Header.Get("Authorization"))
+		}
+		w.Write([]byte(`{"five_hour": {"utilization": 20.0}}`))
+	}
+	s.refresh = func(w http.ResponseWriter, r *http.Request) {
+		if r.FormValue("refresh_token") == "stale-refresh" {
+			writeCreds(t, home, "cli-access", "cli-refresh", futureMs(time.Hour), "pro")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error": "invalid_grant"}`))
+			return
+		}
+		t.Errorf("unexpected refresh for %q", r.FormValue("refresh_token"))
+	}
+	now := time.Now()
+	p := New(WithHome(home),
+		WithUsageURL(s.server.URL+"/api/oauth/usage"),
+		WithRefreshURL(s.server.URL+"/v1/oauth/token"),
+		WithUseKeychain(false), WithSnapshotTTL(0),
+		WithNow(func() time.Time { return now }))
+	snap, err := p.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := quotaByKey(snap.Quotas, "session"); q == nil || *q.PercentRemaining != 80 {
+		t.Errorf("session = %+v, want 80", q)
+	}
+	// The dead token stays terminal: restoring it must not redeem again.
+	writeCreds(t, home, "stale-access", "stale-refresh", pastMs(time.Hour), "pro")
+	if _, err := p.Fetch(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "log in to Claude Code again") {
+		t.Errorf("err = %v, want a log-in-again error", err)
+	}
+	if got := s.refreshHit.Load(); got != 1 {
+		t.Errorf("refresh hits = %d, want 1 (dead token stays terminal)", got)
+	}
+}

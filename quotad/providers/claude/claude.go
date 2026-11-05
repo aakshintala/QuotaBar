@@ -152,10 +152,13 @@ func New(opts ...Option) *Provider {
 // ID is the settings key and the feed id.
 func (p *Provider) ID() string { return providerID }
 
-// Available is cheap: the credentials file exists. No network, no Keychain.
+// Available is cheap: the credentials file exists, or the Keychain may hold
+// the login when the Keychain fallback is on. No network, no process calls.
 func (p *Provider) Available() bool {
-	_, err := os.Stat(filepath.Join(p.home, ".claude", ".credentials.json"))
-	return err == nil
+	if _, err := os.Stat(filepath.Join(p.home, ".claude", ".credentials.json")); err == nil {
+		return true
+	}
+	return p.useKeychain
 }
 
 // Fetch returns the cached snapshot when fresh (even under force), refreshes
@@ -304,8 +307,10 @@ func (p *Provider) refreshNow(ctx context.Context, c *credentials, force bool) (
 		return c, nil
 	}
 	updated, err := p.tryRefresh(ctx, c)
-	if err != nil && !errors.Is(err, errInvalidGrant) {
-		// The CLI may have rotated the file mid-redeem; reread once.
+	if err != nil {
+		// The CLI may have rotated the record mid-redeem, on any failure
+		// including invalid_grant; reread once. The dead token's terminal
+		// gate stays set under its own refresh token.
 		if fresh := p.load(); fresh != nil && (fresh.access != c.access || fresh.refresh != c.refresh) {
 			slog.Info("claude: retrying with credentials rotated during refresh")
 			if fresh.refresh == "" || !needsRefresh(fresh, p.now()) {
@@ -394,6 +399,14 @@ func (p *Provider) redeem(ctx context.Context, c *credentials) (*credentials, er
 	if ok.ExpiresIn != nil {
 		ms := float64(p.now().UnixMilli()) + *ok.ExpiresIn*1000
 		updated.expiresAt = &ms
+	}
+	// Claude Code may have rotated the record while the redeem was in
+	// flight. Reread before writing: when the stored refresh token is no
+	// longer the one just redeemed, keep the on-disk record and use it
+	// instead of overwriting it with stale rotation state.
+	if fresh := p.load(); fresh != nil && fresh.refresh != c.refresh {
+		slog.Info("claude: keeping credentials rotated by Claude Code during refresh")
+		return fresh, nil
 	}
 	p.save(updated)
 	slog.Info("claude: token refreshed")
