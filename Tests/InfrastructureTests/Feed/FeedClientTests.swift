@@ -93,7 +93,8 @@ struct FeedClientTests {
         #expect(monthly.unitsUsed == 15927)
         #expect(monthly.unitsLimit == 27757)
         #expect(snapshot.accountTier == .custom("PRO"))
-        #expect(snapshot.capturedAt == parseISO8601("2026-11-05T23:23:50Z"))
+        // ageSeconds is 0, so capturedAt is the feed's generatedAt.
+        #expect(snapshot.capturedAt == parseISO8601("2026-11-05T23:23:51Z"))
     }
 
     @Test
@@ -105,6 +106,82 @@ struct FeedClientTests {
         #expect(snapshot.quota(for: .weekly)?.percentRemaining == 90)
         #expect(snapshot.quota(for: .modelSpecific("fable"))?.percentRemaining == 100)
         #expect(snapshot.accountTier == .custom("Ultra"))
+    }
+
+    @Test
+    func `probe maps the session key to session`() async throws {
+        let (client, _) = client(serving: try fixtureData("Tests/Support/Fixtures/quotad-quotas.json"))
+
+        let snapshot = try await FeedUsageProbe(id: "opencode-go", client: client).probe()
+
+        #expect(snapshot.quota(for: .session)?.percentRemaining == 100)
+    }
+
+    @Test
+    func `decoder tolerates fractional-second timestamps`() throws {
+        let json = """
+        {"generatedAt":"2026-11-05T23:23:51.123Z","providers":[{"id":"codex","name":"Codex",
+        "capturedAt":"2026-11-05T23:23:51.456Z","status":"healthy",
+        "quotas":[{"key":"weekly","label":"Weekly","percentRemaining":76,"status":"healthy"}]}],
+        "disabledProviderIds":[]}
+        """
+        let feed = try feedDecoder().decode(QuotaFeedDTO.self, from: Data(json.utf8))
+
+        #expect(feed.generatedAt == parseISO8601("2026-11-05T23:23:51.123Z"))
+        #expect(feed.providers.first?.capturedAt == parseISO8601("2026-11-05T23:23:51.456Z"))
+    }
+
+    @Test
+    func `quotas with unavailable throws staleSnapshot carrying the data`() async throws {
+        let json = """
+        {"generatedAt":"2026-11-05T23:23:51Z","providers":[{"id":"cursor","name":"Cursor",
+        "capturedAt":"2026-11-05T23:23:50Z","ageSeconds":1,
+        "status":"warning","unavailable":"quota expired",
+        "quotas":[{"key":"time:Monthly","label":"Monthly","percentRemaining":42.5,
+        "status":"warning"}]}],"disabledProviderIds":[]}
+        """
+        let (client, _) = client(serving: Data(json.utf8))
+
+        let error = await #expect(throws: ProbeError.self) {
+            try await FeedUsageProbe(id: "cursor", client: client).probe()
+        }
+        guard case .staleSnapshot(let snapshot, let reason) = error else {
+            Issue.record("expected staleSnapshot, got \(String(describing: error))")
+            return
+        }
+        #expect(reason == "quota expired")
+        #expect(snapshot.providerId == "cursor")
+        #expect(snapshot.quota(for: .timeLimit("Monthly"))?.percentRemaining == 42.5)
+        #expect(snapshot.capturedAt == parseISO8601("2026-11-05T23:23:50Z"))
+    }
+
+    @Test
+    func `empty quotas without unavailable throws saying quotad has no data yet`() async throws {
+        let json = """
+        {"generatedAt":"2026-11-05T23:23:51Z","providers":[{"id":"cursor","name":"Cursor",
+        "status":"unknown","quotas":[]}],"disabledProviderIds":[]}
+        """
+        let (client, _) = client(serving: Data(json.utf8))
+
+        let error = await #expect(throws: ProbeError.self) {
+            try await FeedUsageProbe(id: "cursor", client: client).probe()
+        }
+        #expect(error == .noCurrentQuota(reason: "quotad has no data yet for provider 'cursor'"))
+    }
+
+    @Test
+    func `capturedAt falls back to generatedAt without ageSeconds`() async throws {
+        let json = """
+        {"generatedAt":"2026-11-05T23:23:51Z","providers":[{"id":"codex","name":"Codex",
+        "status":"healthy",
+        "quotas":[{"key":"weekly","label":"Weekly","percentRemaining":76,"status":"healthy"}]}],
+        "disabledProviderIds":[]}
+        """
+        let (client, _) = client(serving: Data(json.utf8))
+
+        let snapshot = try await FeedUsageProbe(id: "codex", client: client).probe()
+
+        #expect(snapshot.capturedAt == parseISO8601("2026-11-05T23:23:51Z"))
     }
 
     @Test
@@ -168,6 +245,23 @@ struct FeedClientTests {
 
         #expect(await FeedUsageProbe(id: "cursor", client: client).isAvailable() == false)
         #expect(await FeedUsageProbe(id: "codex", client: client).isAvailable() == false)
+        #expect(await FeedUsageProbe(id: "claude", client: client).isAvailable() == true)
+        #expect(await FeedUsageProbe(id: "cursor", client: client).availability() == .unavailable)
+        #expect(await FeedUsageProbe(id: "codex", client: client).availability() == .unavailable)
+        #expect(await FeedUsageProbe(id: "claude", client: client).availability() == .available)
+    }
+
+    @Test
+    func `unreachable daemon is unknown yet still available for the refresh path`() async throws {
+        let network = MockNetworkClient()
+        given(network).request(.any).willThrow(URLError(.cannotConnectToHost))
+        let settings = JSONSettingsRepository(
+            fileURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".json"))
+        settings.update { $0.feed.port = 8787 }
+        let client = FeedClient(settings: settings, networkClient: network)
+
+        #expect(await FeedUsageProbe(id: "claude", client: client).availability() == .unknown)
         #expect(await FeedUsageProbe(id: "claude", client: client).isAvailable() == true)
     }
 

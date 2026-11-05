@@ -22,15 +22,17 @@ public struct SettingsFile: Codable, Equatable, Sendable {
         }
     }
 
-    /// The localhost quota feed (`/quotas`, `/hooks`).
+    /// The localhost quota feed (`/quotas`, `/hooks`). `enabled` is owned by
+    /// quotad: absent stays absent and a value round-trips, so the app never
+    /// writes a default for a key it does not own.
     public struct Feed: Codable, Equatable, Sendable {
-        public var enabled = false
+        public var enabled: Bool?
         public var port = 8787
 
         public init() {}
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            enabled = c(.enabled, enabled)
+            enabled = (try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? nil
             port = c(.port, port)
         }
     }

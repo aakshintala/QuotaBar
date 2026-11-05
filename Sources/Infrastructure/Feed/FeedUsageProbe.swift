@@ -1,6 +1,14 @@
 import Foundation
 import Domain
 
+/// Tri-state reachability of one provider id in quotad's feed: `unknown`
+/// means quotad could not be reached at all, not that the provider is missing.
+public enum FeedProviderAvailability: Sendable, Equatable {
+    case available
+    case unavailable
+    case unknown
+}
+
 /// A `UsageProbe` that reads one provider's snapshot from quotad's local feed
 /// instead of probing a provider API. All probes share one `FeedClient`, so one
 /// HTTP request serves every provider of a refresh.
@@ -21,15 +29,33 @@ public struct FeedUsageProbe: UsageProbe, Sendable {
         if let retryAt = provider.throttledUntil {
             throw ProbeError.rateLimited(retryAt: retryAt)
         }
-        if provider.quotas.isEmpty, let unavailable = provider.unavailable {
-            throw ProbeError.executionFailed(unavailable)
+        // The feed does not always stamp a capture time; derive it from the
+        // feed's own clock so a missing `capturedAt` never invents one.
+        let capturedAt: Date
+        if let ageSeconds = provider.ageSeconds {
+            capturedAt = feed.generatedAt.addingTimeInterval(-TimeInterval(ageSeconds))
+        } else {
+            capturedAt = feed.generatedAt
         }
-        return UsageSnapshot(
+        let snapshot = UsageSnapshot(
             providerId: id,
             quotas: provider.quotas.map { mapQuota($0) },
-            capturedAt: provider.capturedAt ?? Date(),
+            capturedAt: capturedAt,
             accountTier: provider.tier.map(AccountTier.custom)
         )
+        if snapshot.quotas.isEmpty {
+            if let unavailable = provider.unavailable {
+                throw ProbeError.executionFailed(unavailable)
+            }
+            throw ProbeError.noCurrentQuota(reason: "quotad has no data yet for provider '\(id)'")
+        }
+        // Stale quotas still display: `AIProvider.refresh()` keeps the snapshot
+        // and records the message in `lastError`, so the popover shows the data
+        // with its stale warning instead of clearing both.
+        if let unavailable = provider.unavailable {
+            throw ProbeError.staleSnapshot(snapshot, reason: unavailable)
+        }
+        return snapshot
     }
 
     /// False when quotad reports this id as disabled or not present. A daemon
@@ -39,6 +65,14 @@ public struct FeedUsageProbe: UsageProbe, Sendable {
         guard let feed = try? await client.fetch() else { return true }
         if feed.disabledProviderIds.contains(id) { return false }
         return feed.providers.contains { $0.id == id }
+    }
+
+    /// Tri-state reachability for settings UI: `unknown` when quotad cannot be
+    /// reached at all, distinct from a reachable feed that omits this id.
+    public func availability() async -> FeedProviderAvailability {
+        guard let feed = try? await client.fetch() else { return .unknown }
+        if feed.disabledProviderIds.contains(id) { return .unavailable }
+        return feed.providers.contains { $0.id == id } ? .available : .unavailable
     }
 
     // MARK: - Mapping

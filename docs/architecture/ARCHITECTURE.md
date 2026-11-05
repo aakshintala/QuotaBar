@@ -6,7 +6,7 @@ How the pieces fit and how a refresh flows. Build, test, settings keys and loggi
 
 ```
 App (Sources/App)                 SwiftUI; reads QuotaMonitor directly, no view model
-  QuotaBarApp                     composition root: builds providers, monitor, feed, status item
+  QuotaBarApp                     composition root: builds providers, monitor, feed client, status item
   PopoverView, SettingsView       menu bar dropdown and its settings page
   StatusBarIconDriver             static status-item icon + background refresh lifecycle
   AppSettings                     @Observable facade over the settings file
@@ -22,35 +22,37 @@ Domain (Sources/Domain)           no I/O; protocols are @Mockable
   QuotaAlerter, Clock, PowerStateProvider
         │
 Infrastructure (Sources/Infrastructure)
-  Claude/ Codex/ Cursor/ OpenCode/   one UsageProbe + credential loader per provider
+  Feed/FeedClient, FeedUsageProbe    read-only client of quotad's `GET /quotas` (port from `feed.port`); one shared request per refresh, 5 s reuse
+  Server/QuotaFeedDTO                wire types for the feed; the shape must not drift from what quotad serves
   Storage/JSONSettingsRepository     SettingsFile <-> ~/.quotabar/settings.json
-  Server/                            QuotaHTTPServer, FeedServerController, QuotaFeedService, QuotaFeedDTO, QuotaHooks, QuotaFeedText
   Notifications/NotificationAlerter  QuotaAlerter -> UNUserNotificationCenter
-  Shared/                            NetworkClient over URLSession, ProbeHelpers, runProcess, system clock and power state
+  Shared/                            NetworkClient over URLSession, ProbeHelpers, system clock and power state
   Logging/                           AppLog: OSLog + ~/Library/Logs/QuotaBar/QuotaBar.log
 ```
 
 ## Refresh flow
 
 ```
-popover open / refresh button (force) / background tick / GET /quotas
+popover open / refresh button (force) / background tick
         │
 QuotaMonitor.refresh(force:)
         │  for each enabled provider, concurrently:
         │    skip if snapshot < 60 s old and not forced
+        │    skip if isAvailable() is false (disabled or absent from the feed)
         │    join the in-flight Task if one exists
         ▼
-AIProvider.refresh()  ── isSyncing, snapshot, lastError (main actor)
+AIProvider.refresh()     ── isSyncing, snapshot, lastError (main actor)
         │
-UsageProbe.probe()    ── off the main actor; HTTP via NetworkClient
+FeedUsageProbe.probe()   ── off the main actor; GET /quotas via FeedClient
         │
 QuotaMonitor compares snapshot.overallStatus with the last one
         └── changed → QuotaAlerter.alert(...) (if app.quotaAlertsEnabled)
 ```
 
+- The app never probes a provider API and never serves HTTP. Probes, credential handling, the feed server and the Claude Code hooks live in `quotad/`; see `docs/plans/go-daemon.md`.
+- `FeedClient` shares one in-flight `GET /quotas` across all five probes of a refresh and reuses a response younger than 5 s.
+- `FeedUsageProbe` maps its provider's entry (quota keys invert `QuotaType.quotaKey`; tier becomes `AccountTier.custom`). Quotas with `unavailable` throw `staleSnapshot`, so the data still shows with the message in `lastError`; `capturedAt` is the feed's `generatedAt` minus `ageSeconds`.
 - The background loop runs every `app.backgroundSyncInterval` (floor 60 s, doubled on battery) and pauses while the Mac sleeps.
-- `ClaudeAPIUsageProbe` keeps its own 300 s snapshot cache, which also holds on a forced refresh, and backs off on 429 `Retry-After`.
-- `GET /quotas` waits at most 20 s for the refresh, then serves whatever snapshots exist. The Claude Code hooks never refresh; they render the cached feed.
 
 ## Quota status
 

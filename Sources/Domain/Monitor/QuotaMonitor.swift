@@ -60,7 +60,7 @@ public final class QuotaMonitor {
 
     /// Refreshes every enabled, available provider concurrently. Without `force`,
     /// a provider whose snapshot is younger than `minimumSnapshotAge` is skipped.
-    /// The popover, the HTTP feed and the background loop all come through here.
+    /// The popover, the refresh button and the background loop all come through here.
     public func refresh(force: Bool = false) async {
         await withTaskGroup(of: Void.self) { group in
             for provider in providers where provider.isEnabled {
