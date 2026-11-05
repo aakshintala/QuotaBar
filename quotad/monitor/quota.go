@@ -224,8 +224,8 @@ type Tier struct {
 	Badge string
 }
 
-// ClaudeMaxTier returns the Claude MAX tier.
-func ClaudeMaxTier() Tier { return Tier{Claude: true, Badge: "MAX"} }
+// ClaudeMaxTier returns the Claude Max plan tier, shown as Ultra.
+func ClaudeMaxTier() Tier { return Tier{Claude: true, Badge: "ULTRA"} }
 
 // ClaudeProTier returns the Claude Pro tier.
 func ClaudeProTier() Tier { return Tier{Claude: true, Badge: "PRO"} }

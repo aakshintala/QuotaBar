@@ -137,7 +137,7 @@ func TestParseCapturedFixture(t *testing.T) {
 		t.Errorf("fable = %+v, want 83 remaining", fable)
 	}
 	if tier == nil || *tier != monitor.ClaudeMaxTier() {
-		t.Errorf("tier = %+v, want MAX", tier)
+		t.Errorf("tier = %+v, want ULTRA", tier)
 	}
 }
 

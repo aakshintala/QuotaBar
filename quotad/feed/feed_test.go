@@ -182,8 +182,8 @@ func TestAcceptanceFeedShape(t *testing.T) {
 		t.Fatalf("providers = %d, want 2", len(feed.Providers))
 	}
 	claude := feed.Providers[0]
-	if claude.Tier == nil || *claude.Tier != "Max" {
-		t.Errorf("claude tier = %v, want Max", claude.Tier)
+	if claude.Tier == nil || *claude.Tier != "Ultra" {
+		t.Errorf("claude tier = %v, want Ultra", claude.Tier)
 	}
 	if claude.AgeSeconds == nil || *claude.AgeSeconds != 122 {
 		t.Errorf("claude age = %v, want 122", claude.AgeSeconds)
@@ -202,7 +202,7 @@ func TestAcceptanceFeedShape(t *testing.T) {
 func TestThrottledProviderRendersLineAndCachedRows(t *testing.T) {
 	now := time.Now()
 	retryAt := now.Add(time.Hour)
-	tier := "Max"
+	tier := "Ultra"
 	age := 90
 	resets := now.Add(3 * time.Hour)
 	p := ProviderDTO{
