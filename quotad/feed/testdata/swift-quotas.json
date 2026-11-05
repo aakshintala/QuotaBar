@@ -1,0 +1,129 @@
+{
+    "disabledProviderIds": [],
+    "generatedAt": "2026-11-05T22:08:10Z",
+    "providers": [
+        {
+            "ageSeconds": 231,
+            "capturedAt": "2026-11-05T22:04:18Z",
+            "id": "claude",
+            "name": "Claude",
+            "quotas": [
+                {
+                    "key": "weekly",
+                    "label": "Weekly",
+                    "percentRemaining": 91,
+                    "resetText": "Resets in 6d",
+                    "resetsAt": "2026-11-12T03:00:00Z",
+                    "status": "healthy"
+                },
+                {
+                    "key": "model:fable",
+                    "label": "Fable",
+                    "percentRemaining": 100,
+                    "resetText": "Resets in 6d",
+                    "resetsAt": "2026-11-12T03:00:00Z",
+                    "status": "healthy"
+                }
+            ],
+            "status": "healthy",
+            "tier": "Max"
+        },
+        {
+            "ageSeconds": 9,
+            "capturedAt": "2026-11-05T22:08:00Z",
+            "id": "codex",
+            "name": "Codex",
+            "quotas": [
+                {
+                    "key": "session",
+                    "label": "Session",
+                    "percentRemaining": 77,
+                    "resetText": "Resets in 5d",
+                    "resetsAt": "2026-11-11T06:35:45Z",
+                    "status": "healthy"
+                }
+            ],
+            "status": "healthy",
+            "tier": "PROLITE"
+        },
+        {
+            "ageSeconds": 9,
+            "capturedAt": "2026-11-05T22:08:00Z",
+            "id": "cursor",
+            "name": "Cursor",
+            "quotas": [
+                {
+                    "key": "time:Monthly",
+                    "label": "Monthly",
+                    "percentRemaining": 45.089405684754524,
+                    "resetText": "Resets in 24d",
+                    "resetsAt": "2026-11-29T23:58:32Z",
+                    "status": "warning",
+                    "unitsLimit": 26563,
+                    "unitsUsed": 14586
+                }
+            ],
+            "status": "warning",
+            "tier": "PRO"
+        },
+        {
+            "ageSeconds": 9,
+            "capturedAt": "2026-11-05T22:08:00Z",
+            "id": "opencode-go",
+            "name": "OpenCode Go",
+            "quotas": [
+                {
+                    "key": "session",
+                    "label": "Session",
+                    "percentRemaining": 100,
+                    "resetText": "Resets in 4h",
+                    "resetsAt": "2026-11-06T03:08:00Z",
+                    "status": "healthy"
+                },
+                {
+                    "key": "weekly",
+                    "label": "Weekly",
+                    "percentRemaining": 100,
+                    "resetText": "Resets in 3d",
+                    "resetsAt": "2026-11-09T00:00:00Z",
+                    "status": "healthy"
+                },
+                {
+                    "key": "time:Monthly",
+                    "label": "Monthly",
+                    "percentRemaining": 0,
+                    "resetText": "Resets in 7d",
+                    "resetsAt": "2026-11-12T22:13:11Z",
+                    "status": "depleted"
+                }
+            ],
+            "status": "depleted"
+        },
+        {
+            "ageSeconds": 231,
+            "capturedAt": "2026-11-05T22:04:18Z",
+            "id": "muse",
+            "name": "Muse",
+            "quotas": [
+                {
+                    "key": "session",
+                    "label": "Session",
+                    "percentRemaining": 86,
+                    "resetText": "Resets in 2h",
+                    "resetsAt": "2026-11-06T00:24:17Z",
+                    "status": "healthy"
+                },
+                {
+                    "key": "weekly",
+                    "label": "Weekly",
+                    "percentRemaining": 44,
+                    "resetText": "Resets in 3d",
+                    "resetsAt": "2026-11-09T00:00:00Z",
+                    "status": "healthy"
+                }
+            ],
+            "status": "healthy",
+            "tier": "Muse Code Power Usage"
+        }
+    ]
+}
