@@ -445,9 +445,11 @@ func TestFetchRefreshesStaleTokenAndPreservesFields(t *testing.T) {
 
 func TestFetchUsesCurrentFileToken(t *testing.T) {
 	dir := t.TempDir()
-	// The file already holds the CLI-rotated token; the fetch must use it
-	// and skip the refresh endpoint entirely.
-	writeAuth(t, dir, authJSON("cli-rotated-token", "cli-refresh", "acc-fake-1", freshLast()))
+	// The file holds a stale token; the CLI rotates it between the initial
+	// read and the pre-refresh reread. The fetch must use the rotated
+	// credentials (seen via the account header, which survives transit
+	// unredacted) and skip the refresh endpoint entirely.
+	path := writeAuth(t, dir, authJSON("stale-token", "stale-refresh", "acc-old-1", oldLast()))
 
 	refreshHits := 0
 	refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -456,21 +458,31 @@ func TestFetchUsesCurrentFileToken(t *testing.T) {
 	}))
 	defer refreshSrv.Close()
 
-	var usageAuth string
+	var gotAccount string
 	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		usageAuth = r.Header.Get("Authorization")
+		gotAccount = r.Header.Get("ChatGPT-Account-Id")
 		w.Write([]byte(`{"rate_limit": {"primary_window": {"used_percent": 10}}}`))
 	}))
 	defer usageSrv.Close()
 
-	p := newTestProvider(dir,
-		Config{UsageURL: usageSrv.URL, RefreshURL: refreshSrv.URL,
-			Client: usageSrv.Client()})
+	calls := 0
+	nowFn := func() time.Time {
+		if calls == 0 {
+			calls++
+			rotated := authJSON("cli-rotated-token", "cli-refresh", "acc-rot-1", freshLast())
+			if err := os.WriteFile(path, []byte(rotated), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+		return testNow
+	}
+	p := New(Config{HomeDir: dir, LookupEnv: noEnv, Now: nowFn,
+		UsageURL: usageSrv.URL, RefreshURL: refreshSrv.URL, Client: usageSrv.Client()})
 	if _, err := p.Fetch(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if usageAuth != "Bearer cli-rotated-token" || refreshHits != 0 {
-		t.Errorf("auth=%q refreshHits=%d, want rotated token with no refresh", usageAuth, refreshHits)
+	if gotAccount != "acc-rot-1" || refreshHits != 0 {
+		t.Errorf("account=%q refreshHits=%d, want the rotated token with no refresh", gotAccount, refreshHits)
 	}
 }
 
@@ -612,5 +624,319 @@ func TestFetchErrorsNeverContainSecrets(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secretAccess) || strings.Contains(err.Error(), secretRefresh) {
 		t.Errorf("error leaks a secret: %v", err)
+	}
+}
+
+func TestWindowRoleFromLengthWhenPrimaryOmitsIt(t *testing.T) {
+	body := `{"rate_limit": {
+		"primary_window": {"used_percent": 20},
+		"secondary_window": {"used_percent": 30, "limit_window_seconds": 18000}
+	}}`
+	quotas, _, err := parseUsage([]byte(body), http.Header{}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := findQuota(quotas, "session"); q == nil || *q.PercentRemaining != 70 {
+		t.Errorf("session quota = %+v, want 70 (from the secondary window)", q)
+	}
+	if q := findQuota(quotas, "weekly"); q == nil || *q.PercentRemaining != 80 {
+		t.Errorf("weekly quota = %+v, want 80 (primary takes the free role)", q)
+	}
+}
+
+func TestResetAtPreservesFractionalSeconds(t *testing.T) {
+	body := `{"rate_limit": {"primary_window": {
+		"used_percent": 10, "reset_at": 2000003600.5, "limit_window_seconds": 18000
+	}}}`
+	quotas, _, err := parseUsage([]byte(body), http.Header{}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := findQuota(quotas, "session")
+	want := time.Unix(2000003600, 500_000_000)
+	if q == nil || q.ResetsAt == nil || !q.ResetsAt.Equal(want) {
+		t.Errorf("session reset = %+v, want %v", q, want)
+	}
+}
+
+func TestFetchUnauthorizedWithFailedRefreshNeedsLogin(t *testing.T) {
+	dir := t.TempDir()
+	writeAuth(t, dir, authJSON("stale-token", "good-refresh", "", freshLast()))
+
+	refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer refreshSrv.Close()
+
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer usageSrv.Close()
+
+	p := newTestProvider(dir,
+		Config{UsageURL: usageSrv.URL, RefreshURL: refreshSrv.URL,
+			Client: usageSrv.Client()})
+	_, err := p.Fetch(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "log in again") {
+		t.Errorf("err = %v, want a log-in-again error", err)
+	}
+}
+
+func TestFetchRefreshRateLimited(t *testing.T) {
+	dir := t.TempDir()
+	writeAuth(t, dir, authJSON("stale-token", "good-refresh", "", freshLast()))
+
+	refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "90")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer refreshSrv.Close()
+
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer usageSrv.Close()
+
+	p := newTestProvider(dir,
+		Config{UsageURL: usageSrv.URL, RefreshURL: refreshSrv.URL,
+			Client: usageSrv.Client()})
+	_, err := p.Fetch(t.Context())
+	rl, ok := err.(*monitor.RateLimitedError)
+	if !ok {
+		t.Fatalf("err = %T %v, want *RateLimitedError", err, err)
+	}
+	if want := testNow.Add(90 * time.Second); !rl.RetryAt.Equal(want) {
+		t.Errorf("RetryAt = %v, want %v", rl.RetryAt, want)
+	}
+}
+
+func TestFetchRateLimitedZeroRetryAfter(t *testing.T) {
+	dir := t.TempDir()
+	writeAuth(t, dir, authJSON("tok", "ref", "", freshLast()))
+
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer usageSrv.Close()
+
+	p := newTestProvider(dir, Config{UsageURL: usageSrv.URL, Client: usageSrv.Client()})
+	_, err := p.Fetch(t.Context())
+	rl, ok := err.(*monitor.RateLimitedError)
+	if !ok {
+		t.Fatalf("err = %T %v, want *RateLimitedError", err, err)
+	}
+	if !rl.RetryAt.Equal(testNow) {
+		t.Errorf("RetryAt = %v, want %v (a zero delay is a supplied delay)", rl.RetryAt, testNow)
+	}
+}
+
+func TestRetryAfterObsoleteDateForm(t *testing.T) {
+	header := http.Header{"Retry-After": {"Thursday, 05-Nov-26 13:00:00 GMT"}}
+	want := time.Date(2026, time.November, 5, 13, 0, 0, 0, time.UTC)
+	if got := retryAfter(header, testNow); !got.Equal(want) {
+		t.Errorf("retryAfter = %v, want %v", got, want)
+	}
+}
+
+func TestFetchUsageRedirectNotFollowed(t *testing.T) {
+	dir := t.TempDir()
+	writeAuth(t, dir, authJSON("tok", "ref", "acc-fake-1", freshLast()))
+
+	evilHits := 0
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHits++
+		w.Write([]byte(`{"rate_limit": {"primary_window": {"used_percent": 10}}}`))
+	}))
+	defer evil.Close()
+
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", evil.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer usageSrv.Close()
+
+	p := newTestProvider(dir, Config{UsageURL: usageSrv.URL, Client: usageSrv.Client()})
+	_, err := p.Fetch(t.Context())
+	if err == nil {
+		t.Error("expected an error for a redirecting usage endpoint")
+	}
+	if evilHits != 0 {
+		t.Errorf("evilHits = %d, want 0 (no credentialed redirect followed)", evilHits)
+	}
+}
+
+func TestFetchRefreshRedirectNotFollowed(t *testing.T) {
+	dir := t.TempDir()
+	writeAuth(t, dir, authJSON("old-token", "old-refresh", "", oldLast()))
+
+	evilHits := 0
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHits++
+		w.Write([]byte(`{"access_token": "evil-token"}`))
+	}))
+	defer evil.Close()
+
+	refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", evil.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer refreshSrv.Close()
+
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"rate_limit": {"primary_window": {"used_percent": 10}}}`))
+	}))
+	defer usageSrv.Close()
+
+	p := newTestProvider(dir,
+		Config{UsageURL: usageSrv.URL, RefreshURL: refreshSrv.URL,
+			Client: usageSrv.Client()})
+	snap, err := p.Fetch(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evilHits != 0 {
+		t.Errorf("evilHits = %d, want 0 (refresh must not replay its body elsewhere)", evilHits)
+	}
+	if q := findQuota(snap.Quotas, "session"); q == nil {
+		t.Error("expected a session quota from the fallback token")
+	}
+}
+
+func TestFetchCorruptFileAbortsWriteback(t *testing.T) {
+	dir := t.TempDir()
+	path := writeAuth(t, dir, authJSON("old-token", "old-refresh", "", oldLast()))
+
+	refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+			t.Error(err)
+		}
+		w.Write([]byte(`{"access_token": "new-token"}`))
+	}))
+	defer refreshSrv.Close()
+
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"rate_limit": {"primary_window": {"used_percent": 10}}}`))
+	}))
+	defer usageSrv.Close()
+
+	p := newTestProvider(dir,
+		Config{UsageURL: usageSrv.URL, RefreshURL: refreshSrv.URL,
+			Client: usageSrv.Client()})
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "not json" {
+		t.Errorf("writeback clobbered an unreadable file: %q", data)
+	}
+}
+
+func TestFetchMissingFileAbortsWriteback(t *testing.T) {
+	dir := t.TempDir()
+	path := writeAuth(t, dir, authJSON("old-token", "old-refresh", "", oldLast()))
+
+	refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := os.Remove(path); err != nil {
+			t.Error(err)
+		}
+		w.Write([]byte(`{"access_token": "new-token"}`))
+	}))
+	defer refreshSrv.Close()
+
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"rate_limit": {"primary_window": {"used_percent": 10}}}`))
+	}))
+	defer usageSrv.Close()
+
+	p := newTestProvider(dir,
+		Config{UsageURL: usageSrv.URL, RefreshURL: refreshSrv.URL,
+			Client: usageSrv.Client()})
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("writeback recreated a deleted file: stat err = %v", err)
+	}
+}
+
+func TestFetchRefreshTokenRotationAdopted(t *testing.T) {
+	dir := t.TempDir()
+	path := writeAuth(t, dir, authJSON("rot-access-A", "refresh-R1", "acc-fake-1", oldLast()))
+
+	var gotRefresh string
+	refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		gotRefresh = r.FormValue("refresh_token")
+		w.Write([]byte(`{"access_token": "new-token"}`))
+	}))
+	defer refreshSrv.Close()
+
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"rate_limit": {"primary_window": {"used_percent": 10}}}`))
+	}))
+	defer usageSrv.Close()
+
+	calls := 0
+	nowFn := func() time.Time {
+		if calls == 0 {
+			calls++
+			rotated := authJSON("rot-access-A", "refresh-R2", "acc-fake-1", oldLast())
+			if err := os.WriteFile(path, []byte(rotated), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+		return testNow
+	}
+	p := New(Config{HomeDir: dir, LookupEnv: noEnv, Now: nowFn,
+		UsageURL: usageSrv.URL, RefreshURL: refreshSrv.URL, Client: usageSrv.Client()})
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if gotRefresh != "refresh-R2" {
+		t.Errorf("refresh presented %q, want the rotated refresh-R2", gotRefresh)
+	}
+}
+
+func TestFetchConcurrentRotationNotOverwritten(t *testing.T) {
+	dir := t.TempDir()
+	path := writeAuth(t, dir, authJSON("old-access", "old-refresh", "", oldLast()))
+
+	refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rotated := authJSON("cli-access", "cli-refresh", "", freshLast())
+		if err := os.WriteFile(path, []byte(rotated), 0o600); err != nil {
+			t.Error(err)
+		}
+		w.Write([]byte(`{"access_token": "new-access", "refresh_token": "new-refresh"}`))
+	}))
+	defer refreshSrv.Close()
+
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"rate_limit": {"primary_window": {"used_percent": 10}}}`))
+	}))
+	defer usageSrv.Close()
+
+	p := newTestProvider(dir,
+		Config{UsageURL: usageSrv.URL, RefreshURL: refreshSrv.URL,
+			Client: usageSrv.Client()})
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	tokens, _ := doc["tokens"].(map[string]any)
+	if tokens["access_token"] != "cli-access" || tokens["refresh_token"] != "cli-refresh" {
+		t.Errorf("writeback overwrote a concurrent CLI rotation: %v", tokens)
 	}
 }

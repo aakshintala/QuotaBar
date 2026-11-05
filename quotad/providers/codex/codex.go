@@ -80,6 +80,11 @@ func New(c Config) *Provider {
 	if c.Client == nil {
 		c.Client = &http.Client{}
 	}
+	// Credentialed requests carry bearer and refresh tokens, so they must
+	// never follow a redirect onto another host.
+	redirectless := *c.Client
+	redirectless.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	c.Client = &redirectless
 	if c.LookupEnv == nil {
 		c.LookupEnv = os.Getenv
 	}
@@ -184,7 +189,7 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 	}
 	if needsRefresh(c.accessToken, c.lastRefresh, p.now()) {
 		// Reread first: the Codex CLI may have rotated the file already.
-		if fresh := p.loadCredentials(); fresh != nil && fresh.accessToken != c.accessToken {
+		if fresh := p.loadCredentials(); fresh != nil && *fresh != *c {
 			c = fresh
 		}
 		if needsRefresh(c.accessToken, c.lastRefresh, p.now()) {
@@ -205,10 +210,11 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 	if (status == http.StatusUnauthorized || status == http.StatusForbidden) && c.refreshToken != "" {
 		u, rerr := p.refresh(ctx, c)
 		if rerr != nil {
-			if errors.Is(rerr, errNeedsLogin) {
+			var limited *monitor.RateLimitedError
+			if errors.As(rerr, &limited) {
 				return monitor.Snapshot{}, rerr
 			}
-			return monitor.Snapshot{}, fmt.Errorf("codex: usage request failed (HTTP %d)", status)
+			return monitor.Snapshot{}, errNeedsLogin
 		}
 		if body, header, status, err = p.getUsage(ctx, u); err != nil {
 			return monitor.Snapshot{}, err
@@ -274,9 +280,12 @@ func (p *Provider) refresh(ctx context.Context, c *credentials) (*credentials, e
 		return nil, fmt.Errorf("codex: build refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	body, _, status, err := p.roundTrip(ctx, req)
+	body, header, status, err := p.roundTrip(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	if status == http.StatusTooManyRequests {
+		return nil, &monitor.RateLimitedError{RetryAt: retryAfter(header, p.now())}
 	}
 	if status == http.StatusBadRequest || status == http.StatusUnauthorized {
 		slog.Error("codex: refresh rejected, session expired", "status", status)
@@ -297,20 +306,34 @@ func (p *Provider) refresh(ctx context.Context, c *credentials) (*credentials, e
 	if doc.Refresh != "" {
 		updated.refreshToken = doc.Refresh
 	}
-	p.saveRefreshed(updated, doc.IDToken)
+	p.saveRefreshed(updated, doc.IDToken, c)
 	slog.Info("codex: token refreshed")
 	return updated, nil
 }
 
 // saveRefreshed merges the new tokens into the latest on-disk JSON and
 // writes it back atomically, keeping every other field unchanged.
-func (p *Provider) saveRefreshed(updated *credentials, idToken string) {
+func (p *Provider) saveRefreshed(updated *credentials, idToken string, base *credentials) {
+	disk, err := creds.ReadFile(p.AuthPath())
+	if err != nil {
+		slog.Warn("codex: reread auth file failed, skipping writeback")
+		return
+	}
 	merged := map[string]any{}
-	if disk, err := creds.ReadFile(p.AuthPath()); err == nil {
-		_ = json.Unmarshal(disk, &merged)
+	if err := json.Unmarshal(disk, &merged); err != nil {
+		slog.Warn("codex: parse auth file failed, skipping writeback")
+		return
 	}
 	if merged == nil {
 		merged = map[string]any{}
+	}
+	if toks, ok := merged["tokens"].(map[string]any); ok && base != nil {
+		at, _ := toks["access_token"].(string)
+		rt, _ := toks["refresh_token"].(string)
+		if (at != "" && at != base.accessToken) || (rt != "" && rt != base.refreshToken) {
+			slog.Info("codex: auth file rotated during refresh, keeping on-disk tokens")
+			return
+		}
 	}
 	tokens, _ := merged["tokens"].(map[string]any)
 	if tokens == nil {
@@ -360,21 +383,21 @@ type usageResponse struct {
 
 // roleOf maps a window length to its session or weekly role, as the CodexBar
 // normalizer does. The lengths come from the domain window durations.
-func roleOf(w *windowResponse) monitor.QuotaType {
+func roleOf(w *windowResponse) (monitor.QuotaType, bool) {
 	if w.LengthSeconds != nil {
 		switch *w.LengthSeconds {
 		case float64(monitor.SessionType().Duration().Seconds()):
-			return monitor.SessionType()
+			return monitor.SessionType(), true
 		case float64(monitor.WeeklyType().Duration().Seconds()):
-			return monitor.WeeklyType()
+			return monitor.WeeklyType(), true
 		}
 	}
-	return monitor.QuotaType{}
+	return monitor.QuotaType{}, false
 }
 
 // parseUsage maps the usage response onto quotas. Header percents win over
 // the body; each window's role comes from its length, falling back to its
-// position when the length is absent.
+// position when the length is absent or already claimed.
 func parseUsage(body []byte, header http.Header, now time.Time) ([]monitor.Quota, *monitor.Tier, error) {
 	var doc usageResponse
 	if err := json.Unmarshal(body, &doc); err != nil {
@@ -395,15 +418,22 @@ func parseUsage(body []byte, header http.Header, now time.Time) ([]monitor.Quota
 			slots = append(slots, slot{weekly, "secondary", w})
 		}
 	}
-	// A window whose length claims the other slot swaps places with it; a
-	// lone window takes the slot its length names.
-	if len(slots) == 2 && roleOf(slots[0].win) == weekly && roleOf(slots[1].win) != weekly {
-		slots[0], slots[1] = slots[1], slots[0]
-		slots[0].typ, slots[1].typ = session, weekly
+	// Each recognized length sets its own role. A window without one keeps
+	// its positional role unless that role is taken, when it takes the free one.
+	for i := range slots {
+		if r, ok := roleOf(slots[i].win); ok {
+			slots[i].typ = r
+		}
 	}
-	if len(slots) == 1 {
-		if r := roleOf(slots[0].win); r != (monitor.QuotaType{}) {
-			slots[0].typ = r
+	if len(slots) == 2 && slots[0].typ == slots[1].typ {
+		lose := 1
+		if _, ok := roleOf(slots[0].win); !ok {
+			lose = 0
+		}
+		if slots[lose].typ == session {
+			slots[lose].typ = weekly
+		} else {
+			slots[lose].typ = session
 		}
 	}
 	var quotas []monitor.Quota
@@ -418,7 +448,8 @@ func parseUsage(body []byte, header http.Header, now time.Time) ([]monitor.Quota
 		q := monitor.NewPercentQuota(max(0, 100-used), s.typ, ID)
 		switch {
 		case s.win.ResetAt != nil:
-			t := time.Unix(int64(*s.win.ResetAt), 0)
+			sec, frac := math.Modf(*s.win.ResetAt)
+			t := time.Unix(int64(sec), int64(frac*float64(time.Second)))
 			q.ResetsAt = &t
 		case s.win.ResetAfter != nil:
 			t := now.Add(time.Duration(*s.win.ResetAfter * float64(time.Second)))
@@ -487,10 +518,10 @@ func headerPercent(header http.Header, key string) (float64, bool) {
 func retryAfter(header http.Header, now time.Time) time.Time {
 	if s := strings.TrimSpace(header.Get("Retry-After")); s != "" {
 		if secs, err := strconv.Atoi(s); err == nil {
-			if secs > 0 {
+			if secs >= 0 {
 				return now.Add(time.Duration(secs) * time.Second)
 			}
-		} else if t, err := time.Parse(http.TimeFormat, s); err == nil && t.After(now) {
+		} else if t, err := http.ParseTime(s); err == nil && t.After(now) {
 			return t
 		}
 	}
