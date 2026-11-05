@@ -312,6 +312,19 @@ func TestAfterRestartServesPersistedObservation(t *testing.T) {
 	if !snap.CapturedAt.Equal(firstSnap.CapturedAt) {
 		t.Errorf("CapturedAt = %v, want %v", snap.CapturedAt, firstSnap.CapturedAt)
 	}
+	want := quotaOfKind(firstSnap, monitor.KindWeekly)
+	if got := *snap.Quotas[0].PercentRemaining; want == nil || got != *want.PercentRemaining {
+		t.Errorf("restored weekly remaining = %v, want %v", got, want)
+	}
+}
+
+func quotaOfKind(s monitor.Snapshot, k monitor.QuotaKind) *monitor.Quota {
+	for i := range s.Quotas {
+		if s.Quotas[i].Type.Kind == k {
+			return &s.Quotas[i]
+		}
+	}
+	return nil
 }
 
 func TestRestartInsideCooldownServesPersistedObservation(t *testing.T) {

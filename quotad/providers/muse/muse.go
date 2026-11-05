@@ -491,7 +491,8 @@ func (p *Provider) loadPersisted(fp string, now time.Time) (monitor.Snapshot, bo
 			t := appleToTime(*w.ResetsAt)
 			reset = &t
 		}
-		if q, ok := windowQuota(&w.Remaining, reset, typ, now); ok {
+		used := 100 - w.Remaining // the cache stores remaining, windowQuota takes used
+		if q, ok := windowQuota(&used, reset, typ, now); ok {
 			snap.Quotas = append(snap.Quotas, q)
 		}
 	}
