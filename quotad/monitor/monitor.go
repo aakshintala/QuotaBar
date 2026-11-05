@@ -9,6 +9,7 @@ import (
 const (
 	MinimumSnapshotAge = 60 * time.Second
 	MinimumInterval    = 60 * time.Second
+	FetchTimeout       = 60 * time.Second
 )
 
 func ClampInterval(d time.Duration) time.Duration { return max(d, MinimumInterval) }
@@ -98,16 +99,17 @@ func (m *Monitor) Refresh(ctx context.Context, force bool) {
 		m.mu.Unlock()
 		wg.Add(1)
 		if !ok {
-			go func() { defer wg.Done(); m.fetchAndStore(ctx, p, done) }()
-		} else {
-			go func() {
-				defer wg.Done()
-				select {
-				case <-done:
-				case <-ctx.Done():
-				}
-			}()
+			// The fetch outlives any one caller: a waiter that gives up must not cancel it for the others.
+			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), FetchTimeout)
+			go func() { defer cancel(); m.fetchAndStore(fctx, p, done) }()
 		}
+		go func() {
+			defer wg.Done()
+			select {
+			case <-done:
+			case <-ctx.Done():
+			}
+		}()
 	}
 	wg.Wait()
 }

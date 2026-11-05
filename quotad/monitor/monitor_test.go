@@ -354,3 +354,21 @@ func TestBackgroundLoopRefreshesThenSleeps(t *testing.T) {
 		t.Errorf("loop should sleep the floored interval, sleeps = %v", clock.sleeps)
 	}
 }
+
+func TestCallerGivingUpDoesNotCancelSharedFetch(t *testing.T) {
+	p := &fakeProvider{id: "claude", available: true, release: make(chan struct{}), captured: time.Now()}
+	m := New([]Provider{p})
+	ctx, cancel := context.WithCancel(context.Background())
+	returned := make(chan struct{})
+	go func() { m.Refresh(ctx, true); close(returned) }()
+	for p.numCalls() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-returned
+	close(p.release)
+	m.Refresh(context.Background(), false) // joins the still-running fetch
+	if _, ok := m.SnapshotOf("claude"); !ok {
+		t.Fatalf("fetch was cancelled with its first caller; err=%v", m.LastError("claude"))
+	}
+}
