@@ -5,6 +5,7 @@ package monitor
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -202,6 +203,8 @@ func (m *Monitor) fetchAndStore(ctx context.Context, p Provider, done chan struc
 	defer m.mu.Unlock()
 
 	if err != nil {
+		// Providers keep secrets out of error strings, so this is safe to log.
+		slog.Warn("fetch failed", "provider", p.ID(), "err", err)
 		m.errs[p.ID()] = err
 		return
 	}

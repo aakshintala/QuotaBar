@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -194,6 +195,10 @@ func (p *Provider) loadDBKey(ctx context.Context, db string) (string, bool, erro
 	stdout, stderr, err := runSQLite(ctx, db, credentialQuery)
 	if err != nil {
 		if bytes.Contains(stderr, []byte("no such table")) {
+			return "", true, nil
+		}
+		if errors.Is(err, exec.ErrNotFound) {
+			slog.Warn("opencode: sqlite3 not installed; reading auth.json")
 			return "", true, nil
 		}
 		slog.Error("opencode: cannot read credential database")
