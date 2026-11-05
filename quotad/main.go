@@ -16,6 +16,7 @@ import (
 
 	"quotad/feed"
 	"quotad/monitor"
+	"quotad/providers/muse"
 	"quotad/settings"
 )
 
@@ -27,7 +28,7 @@ func main() {
 	flag.Parse()
 
 	// Later jobs append concrete providers here.
-	providers := []monitor.Provider{}
+	providers := []monitor.Provider{muse.New()}
 
 	loader := settings.NewLoader(*settingsPath)
 	cfg := loader.Current()
