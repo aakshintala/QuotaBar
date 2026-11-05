@@ -1,0 +1,21 @@
+{
+  "rate_limit": {
+    "primary_window": {
+      "used_percent": 30,
+      "reset_at": 2000003600,
+      "limit_window_seconds": 18000
+    },
+    "secondary_window": {
+      "used_percent": 60,
+      "reset_at": 2000600000,
+      "limit_window_seconds": 604800
+    }
+  },
+  "credits": {
+    "has_credits": true,
+    "unlimited": false,
+    "balance": "1234.5"
+  },
+  "plan_type": "plus",
+  "account_id": "acc-fake-001"
+}

@@ -1,8 +1,7 @@
 // Command quotad is the always-on quota backend: it refreshes provider
 // quotas on a background loop and serves them over a localhost HTTP feed.
 //
-// Skeleton: zero providers are registered yet; later jobs append to the
-// providers list. Flags only override the settings path and the feed port.
+// Flags only override the settings path and the feed port.
 package main
 
 import (
@@ -17,6 +16,10 @@ import (
 	"quotad/feed"
 	"quotad/monitor"
 	"quotad/providers/claude"
+	"quotad/providers/codex"
+	"quotad/providers/cursor"
+	"quotad/providers/muse"
+	"quotad/providers/opencode"
 	"quotad/settings"
 )
 
@@ -27,8 +30,13 @@ func main() {
 	portOverride := flag.Int("port", 0, "override the feed port from settings")
 	flag.Parse()
 
-	// Later jobs append concrete providers here.
-	providers := []monitor.Provider{claude.New()}
+	providers := []monitor.Provider{
+		claude.New(),
+		codex.New(codex.Config{}),
+		cursor.New(),
+		opencode.New(),
+		muse.New(),
+	}
 
 	loader := settings.NewLoader(*settingsPath)
 	cfg := loader.Current()
@@ -37,7 +45,7 @@ func main() {
 		monitor.WithIsEnabled(func(id string) bool {
 			return loader.Current().ProviderEnabled(id, true)
 		}),
-		monitor.WithDisplayName(func(id string) string { return id }),
+		monitor.WithDisplayName(displayName),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -86,4 +94,21 @@ func feedPort(cfg settings.Settings, override int) int {
 		return cfg.FeedPort
 	}
 	return 0
+}
+
+// displayName is the human name the feed and hooks show for a provider id.
+func displayName(id string) string {
+	switch id {
+	case "claude":
+		return "Claude"
+	case "codex":
+		return "Codex"
+	case "cursor":
+		return "Cursor"
+	case "opencode-go":
+		return "OpenCode Go"
+	case "muse":
+		return "Muse"
+	}
+	return id
 }
