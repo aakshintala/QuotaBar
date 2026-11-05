@@ -13,7 +13,7 @@ Status: agreed 2026-11-05. Replaces the Rust daemon on `migration/rust-daemon`.
 - Go standard library only. No third-party modules. `sqlite3` and `/usr/bin/security` are called as processes.
 - No goroutine per request beyond `net/http`'s own; one goroutine per provider during a refresh; one background loop.
 - No abstraction without two real users. No plugin registry, no config layers, no generic retry framework.
-- Package line budgets (non-test code lines; blank lines and comments do not count, so write normally spaced, commented Go): `monitor` 400, `feed` 500, `creds` 250, `settings` 120, each provider 350, `main.go` 150.
+- Package line budgets (non-test code lines; blank lines and comments do not count, so write normally spaced, commented Go): `monitor` 400, `feed` 500, `creds` 250, `settings` 120, each provider 350 (Claude 550 and Codex 450: token refresh, writeback and rate-limit state are required behaviour), `main.go` 150.
 - Anything not in this plan is out of scope; record it as a follow-up instead.
 
 ## Layout
