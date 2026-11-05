@@ -176,6 +176,26 @@ func TestLiveHTTPRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHookBodyOverLimitReturns413(t *testing.T) {
+	s := testServer(time.Now())
+	big := strings.Repeat("a", (1<<20)+1)
+	if w := doRequest(t, s, "POST", "/hooks/session-start", "localhost", big); w.Code != 413 {
+		t.Errorf("oversize hook body = %d, want 413", w.Code)
+	}
+	if w := doRequest(t, s, "POST", "/hooks/prompt", "localhost", big); w.Code != 413 {
+		t.Errorf("oversize hook body = %d, want 413", w.Code)
+	}
+}
+
+func TestHookBodyAtLimitIsAccepted(t *testing.T) {
+	s := testServer(time.Now())
+	base := `{"session_id":"s1"}`
+	padded := base + strings.Repeat(" ", (1<<20)-len(base))
+	if w := doRequest(t, s, "POST", "/hooks/session-start", "localhost", padded); w.Code != 200 {
+		t.Errorf("1MiB hook body = %d, want 200", w.Code)
+	}
+}
+
 func TestServerBindsLoopback(t *testing.T) {
 	s := testServer(time.Now())
 	if err := s.Start(0); err != nil {

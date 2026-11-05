@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,6 +196,37 @@ func TestAcceptanceFeedShape(t *testing.T) {
 	var decoded Feed
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("feed does not round-trip: %v", err)
+	}
+}
+
+func TestThrottledProviderRendersLineAndCachedRows(t *testing.T) {
+	now := time.Now()
+	retryAt := now.Add(time.Hour)
+	tier := "Max"
+	age := 90
+	resets := now.Add(3 * time.Hour)
+	p := ProviderDTO{
+		ID: "claude", Tier: &tier,
+		CapturedAt: isoTime(now), AgeSeconds: &age,
+		Status:         "warning",
+		ThrottledUntil: isoTime(retryAt),
+		Quotas: []QuotaDTO{
+			{Key: "session", Label: "Session", PercentRemaining: f64(65), Status: "healthy"},
+			{Key: "weekly", Label: "Weekly", PercentRemaining: f64(12), Status: "warning", ResetsAt: isoTime(resets)},
+		},
+	}
+	lines := RenderProvider(p, now)
+	if len(lines) != 3 {
+		t.Fatalf("throttled provider with a snapshot should render its line plus one row per quota, got %d: %q", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], "throttled until") || !strings.Contains(lines[0], "showing last known data") {
+		t.Errorf("first line should be the throttling line, got %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "Session") || !strings.Contains(lines[1], "65%") {
+		t.Errorf("second line should be the cached session row, got %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "Weekly") || !strings.Contains(lines[2], "12%") || !strings.Contains(lines[2], "[warning]") {
+		t.Errorf("third line should be the cached weekly row, got %q", lines[2])
 	}
 }
 

@@ -23,11 +23,14 @@ var runCommand = func(ctx context.Context, stdin []byte, name string, args ...st
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
+
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
+
 	if err := cmd.Run(); err != nil {
 		return nil, err
 	}
+
 	return stdout.Bytes(), nil
 }
 
@@ -40,12 +43,15 @@ func ReadFile(path string) ([]byte, error) {
 // directory, fsync, and rename, so a crash never leaves a half-written file.
 func WriteFileAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
+
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		return err
 	}
+
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // no-op after a successful rename
+
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		return err
@@ -61,6 +67,7 @@ func WriteFileAtomic(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+
 	return os.Rename(tmpName, path)
 }
 
@@ -68,6 +75,7 @@ func macOnly() error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("creds: keychain unavailable on %s", runtime.GOOS)
 	}
+
 	return nil
 }
 
@@ -77,35 +85,60 @@ func KeychainRead(service, account string) ([]byte, error) {
 	if err := macOnly(); err != nil {
 		return nil, err
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	out, err := runCommand(ctx, nil, "/usr/bin/security",
 		"find-generic-password", "-s", service, "-a", account, "-w")
 	if err != nil {
 		return nil, fmt.Errorf("creds: security read: %w", err)
 	}
+
 	if trimmed := bytes.TrimSpace(out); len(trimmed) > 0 {
 		return trimmed, nil
 	}
+
 	return nil, fmt.Errorf("creds: security read: empty password")
+}
+
+// keychainNameOK reports whether s is safe to interpolate into the quoted
+// `security -i` script: quotes, backslashes and line breaks would break
+// out of the command string or inject a second command.
+func keychainNameOK(s string) bool {
+	return !strings.ContainsAny(s, "\"\\\n\r")
 }
 
 // KeychainWrite creates or updates (-U) the generic item (service, account)
 // with data. The secret is hex-encoded (-X) into a command fed to
 // `security -i` over stdin, never argv, mirroring the Swift loader.
+// Hex digits cannot break out of the command, but service and account are
+// interpolated quoted, so hostile values are rejected with an error.
 func KeychainWrite(service, account string, data []byte) error {
 	if err := macOnly(); err != nil {
 		return err
 	}
+	if !keychainNameOK(service) {
+		return fmt.Errorf("creds: keychain write: service contains a quote, backslash or line break")
+	}
+	if !keychainNameOK(account) {
+		return fmt.Errorf("creds: keychain write: account contains a quote, backslash or line break")
+	}
+
 	var hex strings.Builder
 	for _, b := range data {
 		fmt.Fprintf(&hex, "%02x", b)
 	}
-	command := "add-generic-password -U -a \"" + account + "\" -s \"" + service + "\" -X " + hex.String() + "\n"
+
+	command := "add-generic-password -U -a \"" + account + "\" -s \"" + service + "\" -X " +
+		hex.String() + "\n"
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	if _, err := runCommand(ctx, []byte(command), "/usr/bin/security", "-i"); err != nil {
 		return fmt.Errorf("creds: security write: %w", err)
 	}
+
 	return nil
 }

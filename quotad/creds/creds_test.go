@@ -132,6 +132,56 @@ func TestKeychainReadInvokesSecurity(t *testing.T) {
 	}
 }
 
+func TestKeychainWriteRejectsHostileNames(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("needs darwin guard to pass")
+	}
+	hostile := []string{`a"b`, `a\b`, "a\nb", "a\rb"}
+	for _, name := range hostile {
+		for _, tc := range []struct {
+			field   string
+			service string
+			account string
+		}{
+			{"service", name, "acct"},
+			{"account", "svc", name},
+		} {
+			var got struct {
+				name  string
+				args  []string
+				stdin []byte
+			}
+			stubRun(t, nil, nil, &got)
+			if err := KeychainWrite(tc.service, tc.account, []byte("x")); err == nil {
+				t.Errorf("%s %q: expected an error", tc.field, name)
+			}
+			if got.name != "" {
+				t.Errorf("%s %q: hostile name reached the security CLI", tc.field, name)
+			}
+		}
+	}
+}
+
+func TestKeychainWriteHexEncodesHostileSecret(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("needs darwin guard to pass")
+	}
+	var got struct {
+		name  string
+		args  []string
+		stdin []byte
+	}
+	stubRun(t, nil, nil, &got)
+	secret := []byte("x\"y\\z\nw;rm -rf ~$(id)")
+	if err := KeychainWrite("svc", "acct", secret); err != nil {
+		t.Fatal(err)
+	}
+	want := "add-generic-password -U -a \"acct\" -s \"svc\" -X 7822795c7a0a773b726d202d7266207e2428696429\n"
+	if string(got.stdin) != want {
+		t.Errorf("stdin = %q, want %q", got.stdin, want)
+	}
+}
+
 func TestKeychainWriteUsesStdin(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("needs darwin guard to pass")

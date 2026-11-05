@@ -1,3 +1,5 @@
+// Package settings reads ~/.quotabar/settings.json, rereading the file
+// whenever its mtime changes.
 package settings
 
 import (
@@ -9,10 +11,13 @@ import (
 )
 
 const (
-	DefaultFeedPort              = 8787
+	// DefaultFeedPort is the localhost feed port when settings enable it.
+	DefaultFeedPort = 8787
+	// DefaultBackgroundSyncSeconds is the fallback loop interval.
 	DefaultBackgroundSyncSeconds = 600
 )
 
+// Settings is the daemon's runtime configuration.
 type Settings struct {
 	BackgroundSyncEnabled  bool
 	BackgroundSyncInterval time.Duration
@@ -21,14 +26,21 @@ type Settings struct {
 	providers              map[string]*bool
 }
 
+// ProviderEnabled reports whether id is switched on, defaulting to def.
 func (s Settings) ProviderEnabled(id string, def bool) bool {
 	if v, ok := s.providers[id]; ok && v != nil {
 		return *v
 	}
+
 	return def
 }
+
 func defaults() Settings {
-	return Settings{BackgroundSyncInterval: DefaultBackgroundSyncSeconds * time.Second, FeedPort: DefaultFeedPort, providers: map[string]*bool{}}
+	return Settings{
+		BackgroundSyncInterval: DefaultBackgroundSyncSeconds * time.Second,
+		FeedPort:               DefaultFeedPort,
+		providers:              map[string]*bool{},
+	}
 }
 
 type fileLeaf struct {
@@ -38,6 +50,7 @@ type fileLeaf struct {
 	Port                   *int     `json:"port"`
 	IsEnabled              *bool    `json:"isEnabled"`
 }
+
 type fileRoot struct {
 	App       fileLeaf            `json:"app"`
 	Feed      *fileLeaf           `json:"feed"`
@@ -47,16 +60,19 @@ type fileRoot struct {
 
 func parse(data []byte) Settings {
 	s := defaults()
+
 	var root fileRoot
 	if json.Unmarshal(data, &root) != nil {
 		return s
 	}
+
 	if v := root.App.BackgroundSyncEnabled; v != nil {
 		s.BackgroundSyncEnabled = *v
 	}
 	if v := root.App.BackgroundSyncInterval; v != nil {
 		s.BackgroundSyncInterval = time.Duration(*v * float64(time.Second))
 	}
+
 	feed := root.Feed
 	if feed == nil {
 		feed = root.MCP // migrated from the old `mcp` section
@@ -69,12 +85,15 @@ func parse(data []byte) Settings {
 			s.FeedPort = *v
 		}
 	}
+
 	for id, p := range root.Providers {
 		s.providers[id] = p.IsEnabled
 	}
+
 	return s
 }
 
+// Loader caches the settings file and rereads it when its mtime changes.
 type Loader struct {
 	path   string
 	mu     sync.Mutex
@@ -83,17 +102,25 @@ type Loader struct {
 	loaded bool
 }
 
+// NewLoader builds a Loader for path.
 func NewLoader(path string) *Loader { return &Loader{path: path} }
+
+// DefaultPath returns ~/.quotabar/settings.json.
 func DefaultPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
+
 	return filepath.Join(home, ".quotabar", "settings.json")
 }
+
+// Current returns the cached settings, rereading the file when it changed
+// on disk. A missing or unreadable file yields the defaults.
 func (l *Loader) Current() Settings {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
 	info, err := os.Stat(l.path)
 	if err != nil {
 		l.cached, l.loaded, l.mtime = defaults(), true, time.Time{}
@@ -102,11 +129,14 @@ func (l *Loader) Current() Settings {
 	if l.loaded && info.ModTime().Equal(l.mtime) {
 		return l.cached
 	}
+
 	data, err := os.ReadFile(l.path)
 	if err != nil {
 		l.cached, l.loaded, l.mtime = defaults(), true, info.ModTime()
 		return l.cached
 	}
+
 	l.cached, l.loaded, l.mtime = parse(data), true, info.ModTime()
+
 	return l.cached
 }

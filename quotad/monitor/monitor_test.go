@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -100,6 +101,23 @@ func TestBalanceFormatting(t *testing.T) {
 	}
 	if got := Credits.Format(12.5); got != "12.5 credits" {
 		t.Errorf("credits 12.5 = %q", got)
+	}
+}
+
+func TestUSDFormatRoundsToCents(t *testing.T) {
+	for _, c := range []struct {
+		amount float64
+		want   string
+	}{
+		{1.15, "$1.15"},
+		{19.99, "$19.99"},
+		{50, "$50.00"},
+		{1234.5, "$1,234.50"},
+		{0, "$0.00"},
+	} {
+		if got := USD.Format(c.amount); got != c.want {
+			t.Errorf("usd %v = %q, want %q", c.amount, got, c.want)
+		}
 	}
 }
 
@@ -353,6 +371,102 @@ func TestBackgroundLoopRefreshesThenSleeps(t *testing.T) {
 	if len(clock.sleeps) != 1 || clock.sleeps[0] != 60*time.Second {
 		t.Errorf("loop should sleep the floored interval, sleeps = %v", clock.sleeps)
 	}
+}
+
+func TestRefreshSpawnsNoWaiterGoroutines(t *testing.T) {
+	const blocked = 8
+	release := make(chan struct{})
+	providers := make([]Provider, blocked)
+	for i := range providers {
+		providers[i] = &fakeProvider{id: string(rune('a' + i)), available: true, release: release}
+	}
+	m := New(providers)
+	before := runtime.NumGoroutine()
+	returned := make(chan struct{})
+	go func() { m.Refresh(context.Background(), false); close(returned) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		total := 0
+		for _, p := range providers {
+			total += p.(*fakeProvider).numCalls()
+		}
+		if total == blocked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fetches did not start")
+		}
+		runtime.Gosched()
+	}
+	time.Sleep(100 * time.Millisecond) // let any waiter goroutines appear
+	lowest := runtime.NumGoroutine()
+	for i := 0; i < 5; i++ {
+		time.Sleep(10 * time.Millisecond)
+		if n := runtime.NumGoroutine(); n < lowest {
+			lowest = n
+		}
+	}
+	close(release)
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh did not return")
+	}
+	// Only the fetches may add goroutines: 1 runner + blocked fetches.
+	if growth := lowest - before; growth > blocked+3 {
+		t.Errorf("goroutines grew by %d, want at most %d: Refresh must not spawn waiter goroutines", growth, blocked+3)
+	}
+}
+
+func TestStaleCheckAndInflightRegisterAreAtomic(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		if !atomicRound() {
+			t.Fatalf("round %d: a caller that saw a stale snapshot started a second fetch", round)
+		}
+	}
+}
+
+func atomicRound() bool {
+	now := time.Now()
+	p := &fakeProvider{id: "claude", available: true, release: make(chan struct{}), captured: now}
+	m := New([]Provider{p}, WithClock(&manualClock{now: now}))
+	m.snapshots["claude"] = Snapshot{ProviderID: "claude", CapturedAt: now.Add(-time.Hour)}
+	first := make(chan struct{})
+	go func() { m.Refresh(context.Background(), false); close(first) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for p.numCalls() == 0 {
+		if time.Now().After(deadline) {
+			return false
+		}
+		runtime.Gosched()
+	}
+	// Churn the monitor mutex: this stretches both the fetch's
+	// store-then-delete gap and each racer's check-then-register gap,
+	// so a racer that checked while stale registers after the delete.
+	stop := make(chan struct{})
+	defer close(stop)
+	for s := 0; s < 8; s++ {
+		go func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					m.SnapshotOf("claude")
+				}
+			}
+		}()
+	}
+	const racers = 32
+	var wg sync.WaitGroup
+	wg.Add(racers + 1)
+	go func() { defer wg.Done(); <-first }()
+	close(p.release)
+	for k := 0; k < racers; k++ {
+		go func() { defer wg.Done(); m.Refresh(context.Background(), false) }()
+	}
+	wg.Wait()
+	return p.numCalls() == 1
 }
 
 func TestCallerGivingUpDoesNotCancelSharedFetch(t *testing.T) {
