@@ -7,6 +7,7 @@ package creds
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,13 @@ import (
 	"runtime"
 	"strings"
 	"time"
+)
+
+// Keychain failure sentinels: security exit 44 is a missing item, exits
+// 51 and 128 are user-cancelled or denied access.
+var (
+	ErrKeychainNotFound = errors.New("creds: keychain item not found")
+	ErrKeychainDenied   = errors.New("creds: keychain access denied")
 )
 
 // runCommand executes a process and returns its stdout. It is a variable
@@ -92,7 +100,7 @@ func KeychainRead(service, account string) ([]byte, error) {
 	out, err := runCommand(ctx, nil, "/usr/bin/security",
 		"find-generic-password", "-s", service, "-a", account, "-w")
 	if err != nil {
-		return nil, fmt.Errorf("creds: security read: %w", err)
+		return nil, mapSecurityError(err)
 	}
 
 	if trimmed := bytes.TrimSpace(out); len(trimmed) > 0 {
@@ -100,6 +108,22 @@ func KeychainRead(service, account string) ([]byte, error) {
 	}
 
 	return nil, fmt.Errorf("creds: security read: empty password")
+}
+
+// mapSecurityError maps security exit statuses to the Keychain sentinels
+// while wrapping the exit error: 44 is a missing item, 51 and 128 are
+// user-cancelled or denied access; anything else stays generic.
+func mapSecurityError(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		switch exitErr.ExitCode() {
+		case 44:
+			return fmt.Errorf("creds: security read: %w: %w", ErrKeychainNotFound, err)
+		case 51, 128:
+			return fmt.Errorf("creds: security read: %w: %w", ErrKeychainDenied, err)
+		}
+	}
+	return fmt.Errorf("creds: security read: %w", err)
 }
 
 // keychainNameOK reports whether s is safe to interpolate into the quoted

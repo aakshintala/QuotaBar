@@ -3,7 +3,10 @@ package creds
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -83,6 +86,59 @@ func stubRun(t *testing.T, out []byte, err error, capture *struct {
 		return out, err
 	}
 	t.Cleanup(func() { runCommand = old })
+}
+
+// exitStatus runs a shell that exits with code for a real *exec.ExitError.
+func exitStatus(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	if err == nil {
+		t.Fatalf("exit %d succeeded, want a failure", code)
+	}
+	return err
+}
+
+func TestMapSecurityError(t *testing.T) {
+	for _, tc := range []struct {
+		code int
+		want error
+	}{
+		{44, ErrKeychainNotFound},
+		{51, ErrKeychainDenied},
+		{128, ErrKeychainDenied},
+	} {
+		err := exitStatus(t, tc.code)
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("exit %d: %v is not an *exec.ExitError", tc.code, err)
+		}
+		mapped := mapSecurityError(err)
+		if !errors.Is(mapped, tc.want) {
+			t.Errorf("exit %d: mapped = %v, want %v", tc.code, mapped, tc.want)
+		}
+		if !errors.As(mapped, &exitErr) {
+			t.Errorf("exit %d: mapped = %v, want the exit error wrapped", tc.code, mapped)
+		}
+	}
+	if mapped := mapSecurityError(exitStatus(t, 1)); errors.Is(mapped, ErrKeychainNotFound) ||
+		errors.Is(mapped, ErrKeychainDenied) {
+		t.Errorf("exit 1: mapped = %v, must stay generic", mapped)
+	}
+}
+
+func TestKeychainReadSurfacesNotFound(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("needs darwin guard to pass")
+	}
+	var got struct {
+		name  string
+		args  []string
+		stdin []byte
+	}
+	stubRun(t, nil, exitStatus(t, 44), &got)
+	if _, err := KeychainRead("svc", "acct"); !errors.Is(err, ErrKeychainNotFound) {
+		t.Errorf("error = %v, want ErrKeychainNotFound", err)
+	}
 }
 
 func TestKeychainOffDarwinErrors(t *testing.T) {
