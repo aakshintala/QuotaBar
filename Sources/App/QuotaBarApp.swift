@@ -13,9 +13,6 @@ struct QuotaBarApp: App {
     /// driven imperatively outside SwiftUI (issue #192).
     private let statusItemDriver: StatusBarIconDriver
 
-    /// Localhost HTTP server for quota feed consumers.
-    private let feedServerController: FeedServerController
-
     /// Binding required by `.menuBarExtraAccess`; also enables programmatic
     /// dropdown control if ever needed.
     @State private var isMenuPresented = false
@@ -34,16 +31,22 @@ struct QuotaBarApp: App {
         let settingsRepository = JSONSettingsRepository.shared
 
         // One AIProvider per (id, name, probe). The id is the settings key and feed id.
-        // OpenCode Go: 5h ($12), weekly ($30), monthly ($60) from opencode's quota API.
-        func provider(_ id: String, _ name: String, _ probe: any UsageProbe) -> AIProvider {
-            AIProvider(id: id, name: name, probe: probe, settingsRepository: settingsRepository)
+        // Snapshots come from quotad's local feed; one shared client serves all
+        // five providers of a refresh with a single HTTP request.
+        let feedClient = FeedClient(settings: settingsRepository)
+        func provider(_ id: String, _ name: String) -> AIProvider {
+            AIProvider(
+                id: id, name: name,
+                probe: FeedUsageProbe(id: id, client: feedClient),
+                settingsRepository: settingsRepository
+            )
         }
         let providers = [
-            provider("claude", "Claude", ClaudeAPIUsageProbe()),
-            provider("codex", "Codex", CodexAPIUsageProbe()),
-            provider("cursor", "Cursor", CursorUsageProbe()),
-            provider("opencode-go", "OpenCode Go", OpenCodeUsageProbe()),
-            provider("muse", "Muse", MuseUsageProbe()),
+            provider("claude", "Claude"),
+            provider("codex", "Codex"),
+            provider("cursor", "Cursor"),
+            provider("opencode-go", "OpenCode Go"),
+            provider("muse", "Muse"),
         ]
         settingsRepository.keepProviders(providers.map(\.id))
         AppLog.providers.info("Created \(providers.count) providers")
@@ -54,13 +57,7 @@ struct QuotaBarApp: App {
             alerter: quotaAlerter
         )
         self.monitor = monitor
-        self.feedServerController = FeedServerController(monitor: monitor)
         AppLog.monitor.info("QuotaMonitor initialized")
-
-        feedServerController.sync(
-            enabled: settingsRepository.settings.feed.enabled,
-            port: settingsRepository.settings.feed.port
-        )
 
         statusItemDriver = StatusBarIconDriver(
             monitor: monitor,
@@ -82,8 +79,7 @@ struct QuotaBarApp: App {
             Group {
                 PopoverView(
                     monitor: monitor,
-                    quotaAlerter: quotaAlerter,
-                    feedServerController: feedServerController
+                    quotaAlerter: quotaAlerter
                 )
                     .appThemeProvider(themeModeId: settings.themeMode)
             }
@@ -93,14 +89,6 @@ struct QuotaBarApp: App {
             // re-assert the menu-bar pixels on both edges.
             .onAppear { statusItemDriver.reassertPresentation() }
             .onDisappear { statusItemDriver.reassertPresentation() }
-            .onChange(of: settings.feedEnabled) { _, enabled in
-                feedServerController.sync(enabled: enabled, port: settings.feedPort)
-            }
-            .onChange(of: settings.feedPort) { _, port in
-                if settings.feedEnabled {
-                    feedServerController.sync(enabled: true, port: port)
-                }
-            }
         } label: {
             // Deliberately static: the menu-bar icon is drawn by
             // StatusBarIconDriver into the status item's button image,

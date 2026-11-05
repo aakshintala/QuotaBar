@@ -63,7 +63,7 @@ struct CodexConfigCard: View {
                         .font(.system(size: 10, weight: .semibold, design: theme.fontDesign))
                         .foregroundStyle(theme.textPrimary)
 
-                    Text("Calls the ChatGPT backend API directly using OAuth credentials.")
+                    Text("Quotas come from quotad's local feed; quotad holds the credentials.")
                         .font(.system(size: 9, weight: .medium, design: theme.fontDesign))
                         .foregroundStyle(theme.textTertiary)
                 }
@@ -74,7 +74,7 @@ struct CodexConfigCard: View {
                     .font(.system(size: 10))
                     .foregroundStyle(hasCredentials ? theme.statusHealthy : theme.statusWarning)
 
-                Text(hasCredentials ? "OAuth credentials found" : "No OAuth credentials found")
+                Text(hasCredentials ? "Available via quotad" : "Not available via quotad")
                     .font(.system(size: 9, weight: .semibold, design: theme.fontDesign))
                     .foregroundStyle(hasCredentials ? theme.statusHealthy : theme.statusWarning)
             }

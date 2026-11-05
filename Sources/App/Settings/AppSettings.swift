@@ -45,14 +45,9 @@ public final class AppSettings {
         }
     }
 
-    /// Whether the localhost quota feed server is enabled (default: false)
-    public var feedEnabled: Bool {
-        didSet {
-            repository.update { $0.feed.enabled = feedEnabled }
-        }
-    }
-
-    /// Port for the quota feed server (default: 8787)
+    /// Port of quotad's localhost quota feed (default: 8787). Read-only here:
+    /// quotad owns `feed.enabled` in the same settings file, so QuotaBar never
+    /// writes the feed section.
     public var feedPort: Int {
         didSet {
             repository.update { $0.feed.port = feedPort }
@@ -91,7 +86,6 @@ public final class AppSettings {
         self.backgroundSyncEnabled = stored.app.backgroundSyncEnabled
         self.backgroundSyncInterval = stored.app.backgroundSyncInterval
         self.quotaAlertsEnabled = stored.app.quotaAlertsEnabled
-        self.feedEnabled = stored.feed.enabled
         self.feedPort = stored.feed.port
     }
 
