@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -135,7 +136,13 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 	slog.Debug("cursor: unauthorized, rereading credentials once")
 	token, user, err = p.credentials(ctx, true)
 	if err != nil {
-		return monitor.Snapshot{}, err
+		if ctx.Err() != nil {
+			return monitor.Snapshot{}, ctx.Err()
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return monitor.Snapshot{}, err
+		}
+		return monitor.Snapshot{}, errLogin
 	}
 	snap, err := p.fetchOnce(ctx, token, user)
 	if errors.Is(err, errAuth) {
@@ -202,7 +209,7 @@ func (p *Provider) dbToken(ctx context.Context) (string, error) {
 	if _, err := os.Stat(path); err != nil {
 		return "", nil
 	}
-	uri := "file:" + path + "?mode=ro"
+	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String()
 	_, walErr := os.Stat(path + "-wal")
 	_, shmErr := os.Stat(path + "-shm")
 	if os.IsNotExist(walErr) && os.IsNotExist(shmErr) {
@@ -211,7 +218,7 @@ func (p *Provider) dbToken(ctx context.Context) (string, error) {
 	out, err := runCommand(ctx, "sqlite3", uri, sqliteQuery)
 	if err != nil {
 		slog.Debug("cursor: sqlite3 query failed")
-		return "", errors.New("cursor: could not read Cursor database")
+		return "", fmt.Errorf("cursor: could not read Cursor database: %w", err)
 	}
 	token := strings.TrimSpace(string(out))
 	if token == "" {
@@ -331,7 +338,7 @@ type usageMeter struct {
 }
 
 type usageSummary struct {
-	MembershipType  string                 `json:"membershipType"`
+	MembershipType  *string                `json:"membershipType"`
 	LimitType       string                 `json:"limitType"`
 	IsUnlimited     bool                   `json:"isUnlimited"`
 	BillingCycleEnd string                 `json:"billingCycleEnd"`
@@ -347,9 +354,9 @@ func parseUsageSummary(data []byte) (monitor.Snapshot, error) {
 	if json.Unmarshal(data, &summary) != nil {
 		return monitor.Snapshot{}, errors.New("cursor: could not parse usage response")
 	}
-	membership := summary.MembershipType
-	if membership == "" {
-		membership = "unknown"
+	membership := "unknown"
+	if summary.MembershipType != nil {
+		membership = *summary.MembershipType
 	}
 	var resetsAt *time.Time
 	if t, err := time.Parse(time.RFC3339Nano, summary.BillingCycleEnd); err == nil {
@@ -373,8 +380,12 @@ func parseUsageSummary(data []byte) (monitor.Snapshot, error) {
 	if len(quotas) == 0 {
 		return monitor.Snapshot{}, errors.New("cursor: no usage data in response")
 	}
-	tier := monitor.CustomTier(strings.ToUpper(membership))
-	return monitor.Snapshot{ProviderID: "cursor", Quotas: quotas, CapturedAt: time.Now(), Tier: &tier}, nil
+	var tier *monitor.Tier
+	if membership != "" {
+		t := monitor.CustomTier(strings.ToUpper(membership))
+		tier = &t
+	}
+	return monitor.Snapshot{ProviderID: "cursor", Quotas: quotas, CapturedAt: time.Now(), Tier: tier}, nil
 }
 
 // meter builds one enabled usage meter, or false when disabled or without a

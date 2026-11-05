@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,28 @@ const probeUsageJSON = `{
 		"onDemand": {"enabled": false, "used": 0, "limit": null}
 	}}`
 
+// TestMain pins HOME and XDG_CONFIG_HOME to a throwaway dir for the whole
+// package, so any lookup the per-test isolation misses can never touch the
+// real home directory.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "cursor-test-home")
+	if err != nil {
+		os.Exit(1)
+	}
+	defer os.RemoveAll(dir)
+	os.Setenv("HOME", dir)
+	os.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
+	os.Exit(m.Run())
+}
+
+// isolateEnv points every env lookup the provider performs at temp paths.
+// Call it in every test that builds a Provider.
+func isolateEnv(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+}
+
 type stubCall struct {
 	name string
 	args []string
@@ -75,6 +98,7 @@ func stubSQLite(t *testing.T, fn func(dbPath, uri, query string) ([]byte, error)
 func testProvider(t *testing.T, srv *httptest.Server) (*Provider, string) {
 	t.Helper()
 	home := t.TempDir()
+	isolateEnv(t, home)
 	p := New(
 		WithBaseURL(srv.URL),
 		WithHTTPClient(srv.Client()),
@@ -86,7 +110,7 @@ func testProvider(t *testing.T, srv *httptest.Server) (*Provider, string) {
 
 func writeDB(t *testing.T, home string) string {
 	t.Helper()
-	path := New(WithHome(home)).dbPath()
+	path := New(WithHome(home), WithXDGConfigHome(filepath.Join(home, ".config"))).dbPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -311,10 +335,14 @@ func TestExpiredTokenIsReread(t *testing.T) {
 }
 
 func Test401DropsCacheAndRetriesOnce(t *testing.T) {
-	token := testJWT("rotated", futureExp())
+	first := testJWT("orig|user_one", futureExp())
+	rotated := testJWT("rotated|user_two", futureExp())
 	var hits atomic.Int64
+	var cookies [2]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hits.Add(1) == 1 {
+		n := hits.Add(1)
+		cookies[n-1] = r.Header.Get("Cookie")
+		if n == 1 {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -324,8 +352,12 @@ func Test401DropsCacheAndRetriesOnce(t *testing.T) {
 
 	p, home := testProvider(t, srv)
 	writeDB(t, home)
+	var reads atomic.Int64
 	stubSQLite(t, func(_, _ string, _ string) ([]byte, error) {
-		return []byte(token), nil
+		if reads.Add(1) == 1 {
+			return []byte(first), nil
+		}
+		return []byte(rotated), nil
 	}, nil)
 
 	snap, err := p.Fetch(context.Background())
@@ -336,7 +368,59 @@ func Test401DropsCacheAndRetriesOnce(t *testing.T) {
 		t.Errorf("quotas = %d", len(snap.Quotas))
 	}
 	if hits.Load() != 2 {
-		t.Errorf("http hits = %d, want 2", hits.Load())
+		t.Fatalf("http hits = %d, want 2", hits.Load())
+	}
+	if !strings.Contains(cookies[1], "user_two%3A%3A") {
+		t.Errorf("retry cookie = %q, want the rotated token's id", cookies[1])
+	}
+	if cookies[0] == cookies[1] {
+		t.Error("retry reused the rejected token instead of rereading the sources")
+	}
+}
+
+func Test401RereadFailureAsksForLogin(t *testing.T) {
+	token := testJWT("stale|user_one", futureExp())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	p, home := testProvider(t, srv)
+	writeDB(t, home)
+	var reads atomic.Int64
+	stubSQLite(t, func(_, _ string, _ string) ([]byte, error) {
+		if reads.Add(1) == 1 {
+			return []byte(token), nil
+		}
+		return nil, errors.New("database vanished mid-refresh")
+	}, nil)
+
+	_, err := p.Fetch(context.Background())
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "log in") {
+		t.Errorf("err = %v, want a log-in error when the reread fails", err)
+	}
+}
+
+func Test401RereadPreservesCancellation(t *testing.T) {
+	token := testJWT("cancelled|user_one", futureExp())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	p, home := testProvider(t, srv)
+	writeDB(t, home)
+	var reads atomic.Int64
+	stubSQLite(t, func(_, _ string, _ string) ([]byte, error) {
+		if reads.Add(1) == 1 {
+			return []byte(token), nil
+		}
+		return nil, context.Canceled
+	}, nil)
+
+	_, err := p.Fetch(context.Background())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled to propagate", err)
 	}
 }
 
@@ -445,6 +529,52 @@ func TestSQLiteReadOnlyURIAndBusyTimeout(t *testing.T) {
 	_ = dbPath
 }
 
+func TestSQLiteURIEscapesSpecialCharsInPath(t *testing.T) {
+	token := testJWT("user", futureExp())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(probeUsageJSON))
+	}))
+	defer srv.Close()
+
+	base := t.TempDir()
+	home := filepath.Join(base, "a?b%c")
+	isolateEnv(t, home)
+	p := New(WithBaseURL(srv.URL), WithHTTPClient(srv.Client()),
+		WithHome(home), WithXDGConfigHome(filepath.Join(home, ".config")))
+	want := p.dbPath()
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("db"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var uris []string
+	stubSQLite(t, func(_, uri, _ string) ([]byte, error) {
+		uris = append(uris, uri)
+		return []byte(token), nil
+	}, nil)
+
+	if _, err := p.Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(uris) != 1 {
+		t.Fatalf("uris = %v, want one sqlite call", uris)
+	}
+	if got := strings.Count(uris[0], "?"); got != 1 {
+		t.Errorf("uri = %q, want exactly one ? (the query separator)", uris[0])
+	}
+	if !strings.Contains(uris[0], "%25") {
+		t.Errorf("uri = %q, want the literal %% escaped", uris[0])
+	}
+	u, err := url.Parse(uris[0])
+	if err != nil {
+		t.Fatalf("uri = %q: %v", uris[0], err)
+	}
+	if u.Path != want {
+		t.Errorf("uri path = %q, want the database path %q", u.Path, want)
+	}
+}
+
 func TestSQLiteImmutableOnlyWithoutSidecars(t *testing.T) {
 	token := testJWT("user", futureExp())
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -520,6 +650,7 @@ func TestLinuxConfigHomeResolution(t *testing.T) {
 	defer srv.Close()
 
 	home := t.TempDir()
+	isolateEnv(t, home)
 	xdg := filepath.Join(home, "xdg")
 	p := New(WithBaseURL(srv.URL), WithHTTPClient(srv.Client()),
 		WithHome(home), WithXDGConfigHome(xdg), WithGOOS("linux"))
@@ -539,7 +670,28 @@ func TestLinuxConfigHomeResolution(t *testing.T) {
 }
 
 func TestProviderID(t *testing.T) {
+	isolateEnv(t, t.TempDir())
 	if New().ID() != "cursor" {
 		t.Errorf("id = %q", New().ID())
+	}
+}
+
+func TestWriteDBStaysInsideTempHome(t *testing.T) {
+	home := t.TempDir()
+	poison := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", poison)
+	path := writeDB(t, home)
+	if path != home && !strings.HasPrefix(path, home+string(os.PathSeparator)) {
+		t.Errorf("database path = %q, want it inside temp home %q", path, home)
+	}
+	if entries, _ := os.ReadDir(poison); len(entries) != 0 {
+		t.Errorf("XDG_CONFIG_HOME dir was touched: %v", entries)
+	}
+	linuxPath := New(WithHome(home),
+		WithXDGConfigHome(filepath.Join(home, ".config")),
+		WithGOOS("linux")).dbPath()
+	if linuxPath != home && !strings.HasPrefix(linuxPath, home+string(os.PathSeparator)) {
+		t.Errorf("linux database path = %q, want it inside temp home %q", linuxPath, home)
 	}
 }

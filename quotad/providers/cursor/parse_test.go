@@ -1,7 +1,10 @@
 package cursor
 
 import (
+	"context"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -204,6 +207,36 @@ func TestParseFreePlan(t *testing.T) {
 	}
 }
 
+func TestParseEmptyMembershipOmitsTier(t *testing.T) {
+	snap, err := parseUsageSummary([]byte(`{
+		"membershipType": "", "isUnlimited": false,
+		"individualUsage": {
+			"plan": {"enabled": true, "used": 10, "limit": 100},
+			"onDemand": {"enabled": false, "used": 0, "limit": null}
+		}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Tier != nil {
+		t.Errorf("tier = %+v, want nil for an empty membershipType", snap.Tier)
+	}
+}
+
+func TestParseMissingMembershipDefaultsUnknownTier(t *testing.T) {
+	snap, err := parseUsageSummary([]byte(`{
+		"isUnlimited": false,
+		"individualUsage": {
+			"plan": {"enabled": true, "used": 10, "limit": 100},
+			"onDemand": {"enabled": false, "used": 0, "limit": null}
+		}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Tier == nil || snap.Tier.Badge != "UNKNOWN" {
+		t.Errorf("tier = %+v, want UNKNOWN when membershipType is missing", snap.Tier)
+	}
+}
+
 func TestParseEnterpriseTeamPlan(t *testing.T) {
 	snap, err := parseUsageSummary([]byte(`{
 		"billingCycleStart": "2026-03-01T00:00:00.000Z",
@@ -369,12 +402,32 @@ func TestCookieUserID(t *testing.T) {
 }
 
 func TestErrorStringsCarryNoSecrets(t *testing.T) {
-	token := pipeJWT(`{"sub":"secret-user","exp":9999999999}`)
-	if _, _, err := decodeJWT("bogus"); err != nil && strings.Contains(err.Error(), "bogus") {
-		t.Error("error echoes the token")
+	fake := "fake-secret-value-ABC123"
+	if _, _, err := decodeJWT(fake); err == nil {
+		t.Fatal("expected a decode error for a bogus token")
+	} else if strings.Contains(err.Error(), fake) {
+		t.Error("decode error echoes the token")
 	}
-	if _, err := cookieUserID("a|evil\nheader"); err != nil && strings.Contains(err.Error(), "evil") {
-		t.Error("error echoes the user id")
+	badSubToken := pipeJWT(`{"sub":"evil|bad;chars"}`)
+	sub, _, err := decodeJWT(badSubToken)
+	if err != nil {
+		t.Fatalf("setup decode failed: %v", err)
 	}
-	_ = token
+	if _, err := cookieUserID(sub); err == nil {
+		t.Fatal("expected a user-id error")
+	} else if strings.Contains(err.Error(), "bad;chars") || strings.Contains(err.Error(), badSubToken) {
+		t.Error("user-id error echoes its input")
+	}
+	token := testJWT("leakcheck|user_999", futureExp())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	p, home := testProvider(t, srv)
+	writeAuthJSON(t, home, token)
+	if _, err := p.Fetch(context.Background()); err == nil {
+		t.Fatal("expected an HTTP 500 error")
+	} else if strings.Contains(err.Error(), token) {
+		t.Error("request error echoes the access token")
+	}
 }
