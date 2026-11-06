@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -594,6 +595,195 @@ func TestFetchRateLimitPersistsAcrossRestart(t *testing.T) {
 	if stored := p2.readRateFile(); len(stored) != 0 {
 		t.Errorf("gate not cleared after success: %v", stored)
 	}
+}
+
+func TestRestartInsideCooldownServesPersistedSnapshot(t *testing.T) {
+	home := t.TempDir()
+	writeCreds(t, home, "limited-access", "fake-refresh", futureMs(24*time.Hour), "pro")
+	s := newStub(t)
+	now := time.Now()
+	sessionReset := now.Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	weeklyReset := now.Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	s.usage = func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(usageJSON(25.5, 41.0, sessionReset, weeklyReset)))
+	}
+	p := testProvider(home, s, &now)
+	first, err := p.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("first Fetch: %v", err)
+	}
+	// The endpoint starts 429ing. This provider holds the reading in
+	// memory, so it still reports throttled.
+	s.usage = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}
+	now = now.Add(301 * time.Second) // past the 300 s snapshot cache
+	var limited *monitor.RateLimitedError
+	if _, err := p.Fetch(context.Background()); !errors.As(err, &limited) {
+		t.Fatalf("gated err = %v, want *RateLimitedError", err)
+	}
+	// A fresh provider (simulated restart) inside the cooldown serves the
+	// persisted snapshot with its original CapturedAt, without HTTP.
+	before := s.usageHits.Load()
+	p2 := testProvider(home, s, &now)
+	snap, err := p2.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("restart Fetch: %v", err)
+	}
+	if !snap.CapturedAt.Equal(first.CapturedAt) {
+		t.Errorf("CapturedAt = %v, want %v", snap.CapturedAt, first.CapturedAt)
+	}
+	session := quotaByKey(snap.Quotas, "session")
+	if session == nil || *session.PercentRemaining != 74.5 {
+		t.Errorf("session = %+v, want 74.5 remaining", session)
+	}
+	weekly := quotaByKey(snap.Quotas, "weekly")
+	if weekly == nil || *weekly.PercentRemaining != 59 {
+		t.Errorf("weekly = %+v, want 59 remaining", weekly)
+	}
+	if snap.Tier == nil || *snap.Tier != monitor.ClaudeProTier() {
+		t.Errorf("tier = %+v, want PRO", snap.Tier)
+	}
+	if got := s.usageHits.Load(); got != before {
+		t.Errorf("usage hits grew %d -> %d while gated", before, got)
+	}
+}
+
+func TestRestartWithOtherAccountSnapshotIsIgnored(t *testing.T) {
+	home := t.TempDir()
+	writeCreds(t, home, "limited-access", "fake-refresh", futureMs(24*time.Hour), "pro")
+	s := newStub(t)
+	now := time.Now()
+	s.usage = func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(usageJSON(25.5, 41.0,
+			now.Add(24*time.Hour).UTC().Format(time.RFC3339),
+			now.Add(7*24*time.Hour).UTC().Format(time.RFC3339))))
+	}
+	p := testProvider(home, s, &now)
+	if _, err := p.Fetch(context.Background()); err != nil {
+		t.Fatalf("first Fetch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".quotabar", "claude", "snapshot.json")); err != nil {
+		t.Fatalf("snapshot file missing after success: %v", err)
+	}
+	// A different login hits its own 429. Its gate must not serve the
+	// other account's persisted snapshot.
+	writeCreds(t, home, "other-access", "other-refresh", futureMs(24*time.Hour), "pro")
+	s.usage = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}
+	now = now.Add(301 * time.Second)
+	if _, err := p.Fetch(context.Background()); err == nil {
+		t.Fatal("expected a throttled error")
+	}
+	var limited *monitor.RateLimitedError
+	if _, err := testProvider(home, s, &now).Fetch(context.Background()); !errors.As(err, &limited) {
+		t.Errorf("restarted err = %v, want *RateLimitedError", err)
+	}
+}
+
+func TestRestartWithExpiredSnapshotServesRateLimited(t *testing.T) {
+	home := t.TempDir()
+	writeCreds(t, home, "limited-access", "fake-refresh", futureMs(24*time.Hour), "pro")
+	s := newStub(t)
+	now := time.Now()
+	s.usage = func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(usageJSON(25.5, 41.0,
+			now.Add(10*time.Minute).UTC().Format(time.RFC3339),
+			now.Add(20*time.Minute).UTC().Format(time.RFC3339))))
+	}
+	p := testProvider(home, s, &now)
+	if _, err := p.Fetch(context.Background()); err != nil {
+		t.Fatalf("first Fetch: %v", err)
+	}
+	s.usage = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7200")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}
+	now = now.Add(301 * time.Second)
+	if _, err := p.Fetch(context.Background()); err == nil {
+		t.Fatal("expected a throttled error")
+	}
+	// Past every persisted reset but still inside the gate: nothing
+	// unexpired remains, so the restart stays throttled.
+	now = now.Add(time.Hour)
+	var limited *monitor.RateLimitedError
+	if _, err := testProvider(home, s, &now).Fetch(context.Background()); !errors.As(err, &limited) {
+		t.Errorf("restarted err = %v, want *RateLimitedError", err)
+	}
+}
+
+func TestGatedFetchIgnoresCorruptSnapshot(t *testing.T) {
+	home := t.TempDir()
+	writeCreds(t, home, "limited-access", "fake-refresh", futureMs(time.Hour), "pro")
+	s := newStub(t)
+	s.usage = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}
+	now := time.Now()
+	var limited *monitor.RateLimitedError
+	if _, err := testProvider(home, s, &now).Fetch(context.Background()); !errors.As(err, &limited) {
+		t.Fatalf("err = %v, want *RateLimitedError", err)
+	}
+	dir := filepath.Join(home, ".quotabar", "claude")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "snapshot.json"), []byte("not json{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testProvider(home, s, &now).Fetch(context.Background()); !errors.As(err, &limited) {
+		t.Errorf("restarted err = %v, want *RateLimitedError", err)
+	}
+}
+
+func TestSuccessPersistsSnapshotFile(t *testing.T) {
+	home := t.TempDir()
+	writeCreds(t, home, "persist-access", "persist-refresh", futureMs(time.Hour), "pro")
+	s := newStub(t)
+	now := time.Now()
+	s.usage = func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(usageJSON(25.5, 41.0,
+			now.Add(24*time.Hour).UTC().Format(time.RFC3339),
+			now.Add(7*24*time.Hour).UTC().Format(time.RFC3339))))
+	}
+	if _, err := testProvider(home, s, &now).Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(home, ".quotabar", "claude")); err != nil {
+		t.Fatal(err)
+	} else if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("snapshot dir mode = %o, want 700", perm)
+	}
+	path := filepath.Join(home, ".quotabar", "claude", "snapshot.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("snapshot file missing: %v", err)
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("snapshot file mode = %o, want 600", perm)
+	}
+	for _, secret := range []string{"persist-access", "persist-refresh"} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("snapshot file contains %q", secret)
+		}
+	}
+	for _, want := range []string{`"providerId":"claude"`, "74.5", "59", `"Badge":"PRO"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("snapshot file missing %s: %s", want, raw)
+		}
+	}
+}
+
+func usageJSON(sessionUtil, weeklyUtil float64, sessionReset, weeklyReset string) string {
+	return `{"five_hour": {"utilization": ` + strconv.FormatFloat(sessionUtil, 'f', 1, 64) +
+		`, "resets_at": "` + sessionReset + `"}, "seven_day": {"utilization": ` +
+		strconv.FormatFloat(weeklyUtil, 'f', 1, 64) + `, "resets_at": "` + weeklyReset + `"}}`
 }
 
 func TestFetchRateLimitDefaultWindow(t *testing.T) {
