@@ -220,7 +220,9 @@ func (p *Provider) dbToken(ctx context.Context) (string, error) {
 		slog.Debug("cursor: sqlite3 query failed")
 		return "", fmt.Errorf("cursor: could not read Cursor database: %w", err)
 	}
-	token := strings.TrimSpace(string(out))
+	// The PRAGMA prints its own row ("250") first; the token is the last line.
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	token := strings.TrimSpace(lines[len(lines)-1])
 	if token == "" {
 		return "", nil
 	}

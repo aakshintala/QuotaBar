@@ -695,3 +695,29 @@ func TestWriteDBStaysInsideTempHome(t *testing.T) {
 		t.Errorf("linux database path = %q, want it inside temp home %q", linuxPath, home)
 	}
 }
+
+// The sqlite3 CLI prints the PRAGMA's own result row ("250") before the
+// SELECT's, so the token is the last line, not the whole output.
+func TestSQLiteOutputSkipsPragmaRow(t *testing.T) {
+	token := testJWT("user", futureExp())
+	var cookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie = r.Header.Get("Cookie")
+		_, _ = w.Write([]byte(probeUsageJSON))
+	}))
+	defer srv.Close()
+
+	p, home := testProvider(t, srv)
+	writeDB(t, home)
+	var calls []stubCall
+	stubSQLite(t, func(_, _, _ string) ([]byte, error) {
+		return []byte("250\n" + token + "\n"), nil
+	}, &calls)
+
+	if _, err := p.Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cookie, "250") || !strings.Contains(cookie, token) {
+		t.Fatalf("cookie should carry only the token")
+	}
+}

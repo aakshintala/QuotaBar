@@ -206,7 +206,9 @@ func (p *Provider) loadDBKey(ctx context.Context, db string) (string, bool, erro
 	}
 	rows := parseRows(string(stdout))
 	if len(rows) == 0 {
-		return "", false, nil
+		// No active row (the Mac CLI leaves stale rows with active NULL):
+		// the database holds no current key, so auth.json decides.
+		return "", true, nil
 	}
 	if len(rows) == 2 && rows[0].integration == rows[1].integration {
 		slog.Error("opencode: ambiguous credential rows")

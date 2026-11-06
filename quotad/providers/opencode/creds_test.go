@@ -384,3 +384,21 @@ func TestLoadKeyFallsBackWhenSQLiteMissing(t *testing.T) {
 		t.Fatalf("missing sqlite3 should fall back to auth.json: got %q, %v", key, err)
 	}
 }
+
+// An opencode.db whose credential rows are all inactive (active NULL, as the
+// Mac CLI leaves a stale row) holds no current key, so auth.json decides.
+func TestLoadKeyNoActiveRowFallsBackToFile(t *testing.T) {
+	home := t.TempDir()
+	writeAuthFile(t, filepath.Join(home, ".local", "share"), "sk-file-key")
+	if err := os.WriteFile(
+		filepath.Join(home, ".local", "share", "opencode", "opencode.db"), []byte{}, 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	stubSQLite(t, func(dbPath, sql string) ([]byte, []byte, error) { return nil, nil, nil })
+	p := New(WithHome(home), WithLookupEnv(testEnv()))
+	key, err := p.loadKey(context.Background())
+	if err != nil || key != "sk-file-key" {
+		t.Fatalf("no active row should fall back to auth.json: got %q, %v", key, err)
+	}
+}
