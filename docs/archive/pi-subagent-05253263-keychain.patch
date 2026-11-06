@@ -1,0 +1,104 @@
+diff --git a/daemon/src/providers/keychain.rs b/daemon/src/providers/keychain.rs
+index f8f56ff..7456637 100644
+--- a/daemon/src/providers/keychain.rs
++++ b/daemon/src/providers/keychain.rs
+@@ -179,10 +179,37 @@ mod native {
+         ensure_interaction_disabled_with(&INTERACTION_DISABLED, || {
+             // This checked process-lifetime policy is the first native
+             // credential API operation. It is never restored or re-enabled.
+-            unsafe { SecKeychainSetUserInteractionAllowed(0) == errSecSuccess }
++            let status = unsafe { SecKeychainSetUserInteractionAllowed(0) };
++            trace_status(c"suppress", status);
++            status == errSecSuccess
+         })
+     }
+ 
++    fn status_class(status: OSStatus) -> &'static std::ffi::CStr {
++        if status == errSecSuccess {
++            c"success"
++        } else if status == errSecItemNotFound {
++            c"item_not_found"
++        } else if status == ERR_SEC_AUTH_FAILED {
++            c"auth_failed"
++        } else if status == ERR_SEC_INTERACTION_NOT_ALLOWED {
++            c"interaction_not_allowed"
++        } else {
++            c"other"
++        }
++    }
++
++    fn trace_status(stage: &'static std::ffi::CStr, status: OSStatus) {
++        unsafe {
++            libc::syslog(
++                libc::LOG_NOTICE,
++                c"[DEBUG-qb-keychain-a4f2] %s %s".as_ptr(),
++                stage.as_ptr(),
++                status_class(status).as_ptr(),
++            );
++        }
++    }
++
+     struct NativeFind {
+         status: OSStatus,
+         length: u32,
+@@ -332,7 +359,9 @@ mod native {
+ 
+     impl ClaudeNativeOperations for SystemClaudeNativeOperations {
+         fn set_interaction_disabled(&self) -> bool {
+-            unsafe { SecKeychainSetUserInteractionAllowed(0) == errSecSuccess }
++            let status = unsafe { SecKeychainSetUserInteractionAllowed(0) };
++            trace_status(c"suppress", status);
++            status == errSecSuccess
+         }
+ 
+         fn find(&self, service: &str, account: &str, request_data: bool) -> NativeFind {
+@@ -361,6 +390,14 @@ mod native {
+                     &mut item,
+                 )
+             };
++            trace_status(
++                if request_data {
++                    c"claude_secret_find"
++                } else {
++                    c"claude_metadata_find"
++                },
++                status,
++            );
+             NativeFind {
+                 status,
+                 length,
+@@ -420,6 +457,13 @@ mod native {
+                 &mut item,
+             )
+         };
++        trace_status(
++            match target {
++                KeychainTarget::CursorAccess => c"cursor_find",
++                KeychainTarget::Muse => c"muse_find",
++            },
++            status,
++        );
+         let has_data = !data.is_null() || length != 0;
+         let mut copied = if status == errSecSuccess {
+             if length as usize > MAX_CREDENTIAL_BYTES {
+@@ -507,6 +551,20 @@ mod native {
+ 
+     #[cfg(test)]
+     mod adapter_tests {
++        #[test]
++        fn status_classes_are_closed_and_safe() {
++            assert_eq!(status_class(errSecSuccess).to_bytes(), b"success");
++            assert_eq!(
++                status_class(errSecItemNotFound).to_bytes(),
++                b"item_not_found"
++            );
++            assert_eq!(status_class(ERR_SEC_AUTH_FAILED).to_bytes(), b"auth_failed");
++            assert_eq!(
++                status_class(ERR_SEC_INTERACTION_NOT_ALLOWED).to_bytes(),
++                b"interaction_not_allowed"
++            );
++            assert_eq!(status_class(-50).to_bytes(), b"other");
++        }
+         use super::*;
+         use std::collections::HashMap;
+         use std::sync::Mutex;

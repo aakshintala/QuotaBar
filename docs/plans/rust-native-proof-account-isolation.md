@@ -1,4 +1,26 @@
-# Main ruling: isolate native proof in the new standard account
+# Native proof actor rulings
+
+## Follow-up: owner-account synthetic run
+
+After the actual `test` login run returned `controller_failure`, the owner explicitly instructed Main to run the synthetic test from the current owner account instead. This supersedes the UID-502-only execution restriction below for a separately reviewed owner-only variant, not for the original frozen launcher.
+
+The new variant must check real/effective/audit UID 501, retain checked lifetime UI suppression, and operate only on freshly created synthetic fixture items. It must not query, read or update any subscription credential item. Main informed the owner that creation fallback can leave a synthetic item in the default Keychain and deleting the temporary Keychain does not remove a fallback item. Destination mismatch still fails before secret retrieval or modification. No default/search-list setter, ACL repair, partition manipulation, upsert, credential export or identity impersonation is allowed.
+
+The original UID-502 sources, signed artifacts and result remain unchanged as evidence. The owner variant needs its own frozen source hashes, fake gates, compile attestation, signing and scoped review before execution. The existing approval to sign reviewed helper B applies; Main performs signing and the actual owner run. It is not permission for a provider probe or original-owner credential write.
+
+The owner variant preserves its private synthetic fixture root rather than deleting files automatically. It must report the failing stage and a closed exception class without raw messages, native bodies, accounts or credential data. Child deadlines and confirmed reaping remain mandatory. No guessed cleanup or retry loop is authorized.
+
+## Owner-account results and later live authorization
+
+The reviewed owner variant passed its clean cross-identity run. A creation-time file-permission repair was needed: the SDK created a mode-0644 fixture, which the strict read guard rejected. The repaired helper checks the created Keychain destination, hardens only that verified synthetic file to 0600, then creates its item. The read guard remains unchanged. Main verified new sources, compiled bytes, signatures and manifest before one successful complete run. The root remains preserved.
+
+The Rust basic proof also passed in the owner account. Main verified its three approved source hashes and compiled artifact, then used the reviewed identity guard and bounded child runner. The allowed update succeeded; the locked update was attempted and refused. The reported post-call lock state was locked, and exact data verification passed. These outcomes do not establish an independent write ACL or vendor-item authorization.
+
+The owner separately approved bounded real Mac provider checks and signed service installation. This permits normal Claude/Codex OAuth renewal and conditional persistence when needed, not forced expiry or retry loops. Cursor/Muse remain read-only. The owner then instructed Main to proceed after a positive official Claude CLI authentication-status check could not establish its internal read path. Main accepts fresh-process `claude auth status --json` as the supported operational before/after check, without claiming it proves plaintext decryption or a specific Keychain read. Record actual renewal and post-check outcomes separately.
+
+The old UID-502 launcher remains frozen historical evidence, not a request for another account switch. See [the native result and artifact record](../research/rust-migration-mac-signed-artifacts.md).
+
+## Original ruling: isolate in the new standard account
 
 The owner chose a throwaway macOS account and created `test`. Main verified its UID is 502, differs from the owner and root, and has no admin group membership. Do not ask for its password or copy provider credentials, owner credential files or signing keys into it.
 

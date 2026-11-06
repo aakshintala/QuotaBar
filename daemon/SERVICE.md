@@ -1,6 +1,6 @@
 # Service management
 
-The Linux user service has since been installed and passed bounded live feed/CLI acceptance. See the [native Linux result](../docs/research/rust-migration-linux-service-acceptance.md) for the installed state and remaining lifecycle checks. Mac service installation remains pending.
+Both native services are installed. Linux passed five-provider feed/CLI acceptance; Mac passed installation and a graceful restart, but three Keychain-backed providers remain blocked. See the [Linux service result](../docs/research/rust-migration-linux-service-acceptance.md) and [Mac service result](../docs/research/rust-migration-mac-service-acceptance.md) for the actual acceptance boundaries. The preparation evidence below remains historical, not a claim that later native checks ran during implementation.
 
 ## Original preparation evidence
 
