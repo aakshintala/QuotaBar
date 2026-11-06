@@ -237,30 +237,28 @@ func TestCacheFilesHoldNoSecrets(t *testing.T) {
 	}
 }
 
-func TestCooldownReturnsRateLimitedWithoutNewRequest(t *testing.T) {
+func TestCooldownServesLastObservationWithoutNewRequest(t *testing.T) {
 	home := t.TempDir()
 	p, hits := fetchOK(t, home, oauthMeta(nil), testMoment)
-	if _, err := p.Fetch(t.Context()); err != nil {
+	first, err := p.Fetch(t.Context())
+	if err != nil {
 		t.Fatalf("first Fetch: %v", err)
 	}
-	// A second fetch inside the five-minute cooldown must not hit the API.
-	if _, err := p.Fetch(t.Context()); err == nil {
-		t.Fatal("expected rate-limited error")
-	} else {
-		var rl *monitor.RateLimitedError
-		if !errors.As(err, &rl) {
-			t.Fatalf("error = %T (%v), want RateLimitedError", err, err)
-		}
-		if !rl.RetryAt.Equal(testMoment.Add(5 * time.Minute)) {
-			t.Errorf("RetryAt = %v", rl.RetryAt)
-		}
+	// Inside QuotaBar's own five-minute cooldown the server has not
+	// throttled anything: serve the last reading, no request, no error.
+	snap, err := p.Fetch(t.Context())
+	if err != nil {
+		t.Fatalf("cooldown Fetch: %v, want nil (own cooldown is not a rate limit)", err)
+	}
+	if !snap.CapturedAt.Equal(first.CapturedAt) || len(snap.Quotas) != len(first.Quotas) {
+		t.Errorf("cooldown snapshot = %+v, want the first reading", snap)
 	}
 	if hits.Load() != 1 {
 		t.Errorf("hits = %d, want 1", hits.Load())
 	}
 }
 
-func TestFailedFetchConsumesCooldown(t *testing.T) {
+func TestFailedFetchConsumesCooldownAndKeepsItsError(t *testing.T) {
 	home := t.TempDir()
 	homeAuth(t, home, oauthMeta(nil))
 	now := testMoment
@@ -268,16 +266,51 @@ func TestFailedFetchConsumesCooldown(t *testing.T) {
 	srv := fixtureServer(t, "boom", http.StatusInternalServerError, &hits, nil)
 	t.Cleanup(srv.Close)
 	p := newProvider(t, home, srv.URL, &now, nil)
-	if _, err := p.Fetch(t.Context()); err == nil {
+	_, firstErr := p.Fetch(t.Context())
+	if firstErr == nil {
 		t.Fatal("expected fetch error")
 	}
-	// The failure reserves the cooldown: no second request.
+	// The failure reserves the cooldown: no second request, and the
+	// refresh keeps reporting the real failure, not a rate limit.
+	_, err := p.Fetch(t.Context())
 	var rl *monitor.RateLimitedError
-	if _, err := p.Fetch(t.Context()); !errors.As(err, &rl) {
-		t.Fatalf("second error = %v, want RateLimitedError", err)
+	if err == nil || errors.As(err, &rl) || err.Error() != firstErr.Error() {
+		t.Fatalf("second error = %v, want the first failure %v", err, firstErr)
 	}
 	if hits.Load() != 1 {
 		t.Errorf("hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestFailureAfterSuccessKeepsErrorThroughCooldown(t *testing.T) {
+	home := t.TempDir()
+	homeAuth(t, home, oauthMeta(nil))
+	now := testMoment
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			_, _ = w.Write([]byte(fixtureBody(t)))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	p := newProvider(t, home, srv.URL, &now, nil)
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatalf("first Fetch: %v", err)
+	}
+	now = testMoment.Add(301 * time.Second)
+	if _, err := p.Fetch(t.Context()); err == nil {
+		t.Fatal("expected failure")
+	}
+	// Inside the cooldown after that failure the error must stay visible
+	// (the monitor keeps the old reading beside it), not clear.
+	now = now.Add(30 * time.Second)
+	if _, err := p.Fetch(t.Context()); err == nil {
+		t.Fatal("cooldown after a failure cleared the error")
+	}
+	if hits.Load() != 2 {
+		t.Errorf("hits = %d, want 2", hits.Load())
 	}
 }
 
