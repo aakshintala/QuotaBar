@@ -99,6 +99,7 @@ type Provider struct {
 	mu              sync.Mutex
 	cached          monitor.Snapshot
 	cachedAt        time.Time
+	mem             bool
 	gateMu          sync.Mutex
 	gates           map[string]*refreshState
 }
@@ -173,6 +174,11 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 		return monitor.Snapshot{}, reauthError()
 	}
 	if until, ok := p.rateLimited(c.access, now); ok {
+		// After a restart the monitor holds nothing yet, so show the
+		// persisted snapshot rather than an empty rate-limited row.
+		if prev, ok := p.loadPersisted(tokenKey(c.access), now); ok && !p.hasMemory() {
+			return prev, nil
+		}
 		return monitor.Snapshot{}, &monitor.RateLimitedError{RetryAt: until}
 	}
 	if needsRefresh(c, now) && c.refresh != "" {
@@ -204,6 +210,7 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 	snap := monitor.Snapshot{ProviderID: providerID, Quotas: quotas, CapturedAt: now, Tier: tier}
 	p.cachedSet(snap, now)
 	p.clearRate(c.access)
+	p.savePersisted(tokenKey(c.access), snap)
 	return snap, nil
 }
 
@@ -219,10 +226,21 @@ func (p *Provider) cachedGet(now time.Time) (monitor.Snapshot, bool) {
 func (p *Provider) cachedSet(snap monitor.Snapshot, now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// mem records that this provider has seen a good reading since start,
+	// even when the snapshot cache itself is disabled.
+	p.mem = true
 	if p.snapTTL <= 0 {
 		return
 	}
 	p.cached, p.cachedAt = snap, now
+}
+
+// hasMemory reports whether this provider has fetched a good reading since
+// start. A restart has none, so a gated fetch may serve the persisted one.
+func (p *Provider) hasMemory() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.mem
 }
 
 // needsRefresh mirrors the Swift loader: missing expiry or within the 5
@@ -525,6 +543,99 @@ func (p *Provider) clearRate(access string) {
 	}
 	delete(gates, key)
 	p.writeRateFile(gates)
+}
+
+func (p *Provider) snapshotPath() string {
+	return filepath.Join(p.home, ".quotabar", "claude", "snapshot.json")
+}
+
+// persistedQuota is one cached meter: the quota key plus its remaining
+// percent and reset, without any token or account data.
+type persistedQuota struct {
+	Type      string     `json:"type"`
+	Remaining float64    `json:"remaining"`
+	ResetsAt  *time.Time `json:"resetsAt"`
+}
+
+// persistedSnapshot is the last good reading, keyed to the account whose
+// token produced it (a SHA-256 hex prefix, never the token itself).
+type persistedSnapshot struct {
+	ProviderID string           `json:"providerId"`
+	Account    string           `json:"account"`
+	CapturedAt time.Time        `json:"capturedAt"`
+	Tier       *monitor.Tier    `json:"tier"`
+	Quotas     []persistedQuota `json:"quotas"`
+}
+
+// quotaTypeFromKey parses a persisted quota key back into a quota type,
+// mirroring QuotaType.Key. Unknown keys are dropped.
+func quotaTypeFromKey(key string) (monitor.QuotaType, bool) {
+	switch {
+	case key == "session":
+		return monitor.SessionType(), true
+	case key == "weekly":
+		return monitor.WeeklyType(), true
+	case key == "model:" || key == "time:":
+		return monitor.QuotaType{}, false
+	case strings.HasPrefix(key, "model:"):
+		return monitor.ModelType(strings.TrimPrefix(key, "model:")), true
+	case strings.HasPrefix(key, "time:"):
+		return monitor.TimeLimitType(strings.TrimPrefix(key, "time:")), true
+	default:
+		return monitor.QuotaType{}, false
+	}
+}
+
+// savePersisted stores quota percentages and resets only: no tokens or
+// account data ever reach the snapshot file. A save failure is logged,
+// not returned: memory is fresh.
+func (p *Provider) savePersisted(key string, snap monitor.Snapshot) {
+	cached := persistedSnapshot{ProviderID: providerID, Account: key, CapturedAt: snap.CapturedAt, Tier: snap.Tier}
+	for _, q := range snap.Quotas {
+		if q.PercentRemaining == nil {
+			continue
+		}
+		w := persistedQuota{Type: q.Type.Key(), Remaining: *q.PercentRemaining, ResetsAt: q.ResetsAt}
+		cached.Quotas = append(cached.Quotas, w)
+	}
+	// Marshal cannot fail: the struct holds only strings, floats and times.
+	data, _ := json.Marshal(cached)
+	if err := os.MkdirAll(filepath.Dir(p.snapshotPath()), 0o700); err != nil {
+		slog.Warn("claude: failed to create snapshot directory")
+		return
+	}
+	if err := creds.WriteFileAtomic(p.snapshotPath(), data); err != nil {
+		slog.Warn("claude: quota snapshot not persisted", "err", err)
+	}
+}
+
+// loadPersisted returns the persisted snapshot for this account with
+// expired quotas filtered out, keeping the original CapturedAt so the feed
+// shows the true age. A corrupt file, another account's file, or a file
+// whose resets have all passed returns false.
+func (p *Provider) loadPersisted(key string, now time.Time) (monitor.Snapshot, bool) {
+	data, err := creds.ReadFile(p.snapshotPath())
+	if err != nil {
+		return monitor.Snapshot{}, false
+	}
+	var cached persistedSnapshot
+	if err := json.Unmarshal(data, &cached); err != nil || cached.ProviderID != providerID || cached.Account != key {
+		return monitor.Snapshot{}, false
+	}
+	snap := monitor.Snapshot{ProviderID: providerID, CapturedAt: cached.CapturedAt, Tier: cached.Tier}
+	for _, w := range cached.Quotas {
+		if w.ResetsAt != nil && !w.ResetsAt.After(now) {
+			continue
+		}
+		typ, ok := quotaTypeFromKey(w.Type)
+		if !ok {
+			continue
+		}
+		q := monitor.NewPercentQuota(w.Remaining, typ, providerID)
+		q.ResetsAt = w.ResetsAt
+		snap.Quotas = append(snap.Quotas, q)
+	}
+	return snap, len(snap.Quotas) > 0
 }
 
 // usageResponse mirrors the /api/oauth/usage body. Spend shapes are decoded
