@@ -107,15 +107,10 @@ let project = Project(
                     fi
                     """,
                     name: "Build and sign bundled quotad",
-                    inputPaths: [
-                        "$(SRCROOT)/quotad",
-                        "$(SRCROOT)/Sources/App/LaunchAgents/com.aakshintala.quotad.plist",
-                    ],
-                    outputPaths: [
-                        "$(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/quotad",
-                        "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Library/LaunchAgents/com.aakshintala.quotad.plist",
-                    ],
-                    basedOnDependencyAnalysis: true
+                    // Runs on every build: Xcode tracks a directory input by the
+                    // directory's own mtime, so edits to .go files never retrigger
+                    // it. Go's build cache keeps an unchanged rebuild near a second.
+                    basedOnDependencyAnalysis: false
                 ),
             ],
             dependencies: [
