@@ -1,6 +1,6 @@
 # Plan: Go quota daemon (`quotad`) with the Swift panel as its client
 
-Status: agreed 2026-11-05. Replaces the Rust daemon on `migration/rust-daemon`.
+Status: done 2026-11-06. Replaced the Rust daemon on `migration/rust-daemon`; quotad runs on Linux (systemd user unit via `quotad install`) and on the Mac (bundled in QuotaBar.app, registered with SMAppService). The Rust binaries and units are deleted on both machines.
 
 ## Goals
 
