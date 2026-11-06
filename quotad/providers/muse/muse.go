@@ -69,7 +69,7 @@ func WithKeychainRead(f func(service, account string) ([]byte, error)) Option {
 func WithGOOS(goos string) Option { return func(p *Provider) { p.goos = goos } }
 
 // Provider fetches Muse subscription quota. The monitor runs at most one
-// Fetch per provider at a time, so mem needs no lock.
+// Fetch per provider at a time, so mem and lastErr need no lock.
 type Provider struct {
 	baseURL      string
 	goos         string
@@ -77,6 +77,7 @@ type Provider struct {
 	lookupEnv    func(string) string
 	keychainRead func(string, string) ([]byte, error)
 	mem          bool
+	lastErr      error // the failure of the last request, until one succeeds
 }
 
 // New builds a Muse provider.
@@ -117,13 +118,26 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 	// The effective hold is the later of the five-minute cooldown and a
 	// persisted 429 retry time, so a short cooldown cannot cut a longer
 	// server backoff short after a restart.
-	if retryAt, ok := p.nextRetry(fp, now); ok {
-		// After a restart the monitor holds nothing yet, so show the
-		// persisted observation rather than an empty rate-limited row.
-		if prev, ok := p.loadPersisted(fp, now); ok && !p.mem {
+	if retryAt, throttled, ok := p.nextRetry(fp, now); ok {
+		prev, havePrev := p.loadPersisted(fp, now)
+		if throttled {
+			// After a restart the monitor holds nothing yet, so show the
+			// persisted observation rather than an empty rate-limited row.
+			if havePrev && !p.mem {
+				return prev, nil
+			}
+			return monitor.Snapshot{}, &monitor.RateLimitedError{RetryAt: retryAt}
+		}
+		// Only QuotaBar's own cooldown holds: the server has not throttled
+		// anything, so repeat the last outcome instead of a rate limit.
+		if p.lastErr != nil {
+			return monitor.Snapshot{}, p.lastErr
+		}
+		if havePrev {
 			return prev, nil
 		}
-		return monitor.Snapshot{}, &monitor.RateLimitedError{RetryAt: retryAt}
+		return monitor.Snapshot{}, fmt.Errorf("Muse quota refreshes at most every %v; next refresh at %s.",
+			cooldown, retryAt.Format(time.RFC3339))
 	}
 	// Reserve the cooldown before the request, so a failure also consumes
 	// it and a concurrent Swift app sees the same bound.
@@ -147,37 +161,42 @@ func (p *Provider) Fetch(ctx context.Context) (monitor.Snapshot, error) {
 			// yet, so serve the unexpired persisted observation and log
 			// the failure instead of failing the refresh.
 			slog.Warn("muse: quota fetch failed, serving persisted observation", "err", err)
+			p.lastErr = nil
 			return prev, nil
 		}
+		p.lastErr = err
 		return monitor.Snapshot{}, err
 	}
 	// A quota-less response must not wipe a previous observation: the
 	// monitor keeps its snapshot when Fetch errors.
 	if len(snap.Quotas) == 0 && (p.mem || p.hasPersisted(fp, now)) {
-		return monitor.Snapshot{}, errors.New("Muse has not returned current quota data; showing the last known reading.")
+		p.lastErr = errors.New("Muse has not returned current quota data; showing the last known reading.")
+		return monitor.Snapshot{}, p.lastErr
 	}
 	if err := p.savePersisted(fp, snap); err != nil {
 		slog.Warn("muse: quota observation not persisted", "err", err)
 	}
 	// A fresh reading lifts any earlier server backoff.
 	_ = os.Remove(filepath.Join(dir, fp+".retry"))
-	p.mem = true
+	p.mem, p.lastErr = true, nil
 	return snap, nil
 }
 
 // nextRetry reports the effective fetch hold: the later of the cooldown
 // stamp and a persisted 429 retry time, when still in the future.
-func (p *Provider) nextRetry(fp string, now time.Time) (time.Time, bool) {
+// throttled is true while the server's 429 retry time is still ahead.
+func (p *Provider) nextRetry(fp string, now time.Time) (best time.Time, throttled, ok bool) {
 	dir := p.cacheDir()
-	var best time.Time
-	ok := false
 	if ts, found := readStamp(filepath.Join(dir, fp+".request")); found && now.Before(ts.Add(cooldown)) {
 		best, ok = ts.Add(cooldown), true
 	}
-	if rt, found := readRetry(filepath.Join(dir, fp+".retry")); found && now.Before(rt) && (!ok || rt.After(best)) {
-		best, ok = rt, true
+	if rt, found := readRetry(filepath.Join(dir, fp+".retry")); found && now.Before(rt) {
+		throttled = true
+		if !ok || rt.After(best) {
+			best, ok = rt, true
+		}
 	}
-	return best, ok
+	return best, throttled, ok
 }
 
 // hasPersisted reports whether an unexpired observation is on disk.
