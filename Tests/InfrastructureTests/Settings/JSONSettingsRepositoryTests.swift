@@ -50,7 +50,7 @@ struct JSONSettingsRepositoryTests {
         #expect(s.app.backgroundSyncEnabled == false)
         #expect(s.app.backgroundSyncInterval == 600)
         #expect(s.app.quotaAlertsEnabled == true)
-        #expect(s.feed.enabled == false)
+        #expect(s.feed.enabled == nil)
         #expect(s.feed.port == 8787)
         #expect(repo.isEnabled(forProvider: "claude") == true)
         #expect(repo.isEnabled(forProvider: "cursor", defaultValue: false) == false)
@@ -64,7 +64,7 @@ struct JSONSettingsRepositoryTests {
         #expect(s.app.backgroundSyncEnabled == false)
         #expect(s.app.backgroundSyncInterval == 300)
         #expect(s.app.quotaAlertsEnabled == false)
-        #expect(s.feed.enabled == true)   // migrated from mcp.enabled
+        #expect(s.feed.enabled == Optional(true))   // migrated from mcp.enabled
         #expect(s.feed.port == 8787)
         #expect(repo.isEnabled(forProvider: "claude") == true)
         #expect(repo.isEnabled(forProvider: "codex") == false)
@@ -77,8 +77,37 @@ struct JSONSettingsRepositoryTests {
         let repo = JSONSettingsRepository(fileURL: tempFile("""
         { "mcp": { "enabled": true, "port": 9000 }, "feed": { "enabled": false, "port": 9100 } }
         """))
-        #expect(repo.settings.feed.enabled == false)
+        #expect(repo.settings.feed.enabled == Optional(false))
         #expect(repo.settings.feed.port == 9100)
+    }
+
+    @Test
+    func `absent feed enabled stays absent across a write`() {
+        let url = tempFile(#"{ "feed": { "port": 9000 } }"#)
+        let repo = JSONSettingsRepository(fileURL: url)
+        #expect(repo.settings.feed.enabled == nil)
+
+        repo.update { $0.app.themeMode = "light" }
+
+        let feed = json(url)["feed"] as? [String: Any] ?? [:]
+        #expect(feed["enabled"] == nil)
+        #expect(feed["port"] as? Int == 9000)
+        #expect(JSONSettingsRepository(fileURL: url).settings.feed.enabled == nil)
+    }
+
+    @Test
+    func `a present feed enabled round-trips unchanged`() {
+        for value in [true, false] {
+            let url = tempFile(#"{ "feed": { "enabled": \#(value), "port": 9000 } }"#)
+            let repo = JSONSettingsRepository(fileURL: url)
+            #expect(repo.settings.feed.enabled == Optional(value))
+
+            repo.update { $0.app.themeMode = "light" }
+
+            let feed = json(url)["feed"] as? [String: Any] ?? [:]
+            #expect(feed["enabled"] as? Bool == value)
+            #expect(JSONSettingsRepository(fileURL: url).settings.feed.enabled == Optional(value))
+        }
     }
 
     @Test

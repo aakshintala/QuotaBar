@@ -6,7 +6,7 @@ import Infrastructure
 struct SettingsContentView: View {
     @Binding var showSettings: Bool
     let monitor: QuotaMonitor
-    let feedServerController: FeedServerController
+    var quotadService: QuotadService?
     @Environment(\.appTheme) private var theme
     @State private var settings = AppSettings.shared
 
@@ -29,6 +29,10 @@ struct SettingsContentView: View {
 
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 12) {
+                    if let quotadService, quotadService.state == .needsApproval {
+                        QuotadApprovalBanner(quotadService: quotadService)
+                    }
+
                     themeCard
                     providersCard
                     generalCard
@@ -114,14 +118,6 @@ struct SettingsContentView: View {
             VStack(spacing: 8) {
                 ForEach(monitor.allProviders, id: \.id) { provider in
                     providerRow(provider: provider)
-                    if provider.id == "muse", provider.isEnabled {
-                        Text("QuotaBar reads the Muse CLI's OAuth credentials from its configured file or Keychain, including the existing standing API key. It never creates credentials.")
-                            .font(.system(size: 10, design: theme.fontDesign))
-                            .foregroundStyle(theme.textTertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.leading, 30)
-                    }
-
                     if provider.id == ProviderID.claude, provider.isEnabled {
                         ClaudeConfigCard(provider: provider)
                             .transition(.opacity.combined(with: .move(edge: .top)))
@@ -166,34 +162,15 @@ struct SettingsContentView: View {
     private var feedCard: some View {
         settingsCard(
             title: "Quota Feed",
-            subtitle: "Expose quotas to Claude Code agents",
+            subtitle: "Served by the quotad daemon",
             icon: "antenna.radiowaves.left.and.right"
         ) {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle(isOn: $settings.feedEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Enable quota feed")
-                            .font(.system(size: 12, weight: .medium, design: theme.fontDesign))
-                            .foregroundStyle(theme.textPrimary)
-                        Text("http://127.0.0.1:\(settings.feedPort)/quotas")
-                            .font(.system(size: 9, weight: .medium, design: theme.fontDesign))
-                            .foregroundStyle(theme.textTertiary)
-                    }
-                }
-                .toggleStyle(.switch)
-                .tint(theme.accentPrimary)
-                // No .onChange here on purpose. QuotaBarApp owns the server
-                // lifecycle; a second observer of the same property delivered
-                // sync() twice, and the duplicate bind lost the port to
-                // EADDRINUSE. The toggle only writes the setting.
+                Text("http://127.0.0.1:\(settings.feedPort)/quotas")
+                    .font(.system(size: 12, weight: .medium, design: theme.fontDesign))
+                    .foregroundStyle(theme.textPrimary)
 
-                if let bindError = feedServerController.bindError {
-                    Text(bindError)
-                        .font(.system(size: 9, weight: .semibold, design: theme.fontDesign))
-                        .foregroundStyle(theme.statusCritical)
-                }
-
-                Text("Serves Claude Code HTTP hooks under /hooks and the JSON feed at /quotas. See the README for hook setup.")
+                Text("QuotaBar reads quotas from quotad, which owns the feed, the Claude Code hooks and the provider credentials. quotad reads the port from the same settings file; QuotaBar never changes it.")
                     .font(.system(size: 9, weight: .semibold, design: theme.fontDesign))
                     .foregroundStyle(theme.textTertiary)
             }
@@ -374,8 +351,7 @@ struct ThemeOptionButton: View {
         AppTheme.dark.backgroundGradient
         SettingsContentView(
             showSettings: .constant(true),
-            monitor: QuotaMonitor(providers: []),
-            feedServerController: FeedServerController(monitor: QuotaMonitor(providers: []))
+            monitor: QuotaMonitor(providers: [])
         )
     }
     .appThemeProvider(themeModeId: "dark")
@@ -387,8 +363,7 @@ struct ThemeOptionButton: View {
         AppTheme.light.backgroundGradient
         SettingsContentView(
             showSettings: .constant(true),
-            monitor: QuotaMonitor(providers: []),
-            feedServerController: FeedServerController(monitor: QuotaMonitor(providers: []))
+            monitor: QuotaMonitor(providers: [])
         )
     }
     .appThemeProvider(themeModeId: "light")

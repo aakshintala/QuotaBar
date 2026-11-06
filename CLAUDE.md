@@ -1,45 +1,41 @@
 # CLAUDE.md
 
-QuotaBar is a macOS menu bar app (Swift 6, SwiftUI, macOS 15+) that shows how much of each AI coding subscription is left and serves the same data to other tools over a localhost HTTP feed. It started as a fork of ClaudeBar and was cut down to five providers; read the code, not old upstream docs or issues.
+QuotaBar is a macOS menu bar app (Swift 6, SwiftUI, macOS 15+) that shows how much of each AI coding subscription is left. It is a client of the `quotad` Go daemon: quotad runs the five provider probes and serves `GET http://127.0.0.1:8787/quotas`, and the app reads that feed to drive its menu bar icon, popover, settings window, themes and quota alerts. The app never probes a provider API and never serves HTTP itself. It started as a fork of ClaudeBar and was cut down to five providers; read the code, not old upstream docs or issues.
 
 ## Providers
 
-| id | Name | Probe | Credentials read |
-|----|------|-------|------------------|
-| `claude` | Claude | `ClaudeAPIUsageProbe` | Claude Code OAuth: `~/.claude/.credentials.json` or Keychain item `Claude Code-credentials` |
-| `codex` | Codex | `CodexAPIUsageProbe` | `~/.codex/auth.json` |
-| `cursor` | Cursor | `CursorUsageProbe` | token from Cursor's `state.vscdb` via `sqlite3` |
-| `opencode-go` | OpenCode Go | `OpenCodeUsageProbe` | `$XDG_DATA_HOME/opencode/auth.json` |
-| `muse` | Muse | `MuseUsageProbe` | Muse CLI OAuth: `$XDG_CONFIG_HOME/muse/auth.json` or `~/.config/muse/auth.json` |
+| id | Name |
+|----|------|
+| `claude` | Claude |
+| `codex` | Codex |
+| `cursor` | Cursor |
+| `opencode-go` | OpenCode Go |
+| `muse` | Muse |
 
-All five call HTTP APIs; nothing drives an interactive CLI. The id is the settings key and the feed id: never change one that has shipped.
-
-The Keychain item `Claude Code-credentials` belongs to Claude Code and trusts only `/usr/bin/security`, so the Claude loader reads and writes it through `security` (over stdin, never argv). Calling `SecItem*` on it would prompt the user.
+Every provider is the one `AIProvider` class with a `FeedUsageProbe(id:client:)` reading its entry from quotad's feed. The id is the settings key and the feed id: never change one that has shipped. Probes, credential handling, the feed server and the Claude Code hooks all live in `quotad/`; see `docs/plans/go-daemon.md`.
 
 ## Layers
 
 | Layer | Path | Holds |
 |-------|------|-------|
 | Domain | `Sources/Domain/` | `AIProvider`, `UsageProbe`, `UsageSnapshot`/`UsageQuota`, `QuotaMonitor`, `ProviderSettingsRepository`, `QuotaAlerter` |
-| Infrastructure | `Sources/Infrastructure/` | probes and credential loaders (one folder per provider), settings file, feed server, notifications, logging, `runProcess` |
+| Infrastructure | `Sources/Infrastructure/` | feed client (`Feed/`), settings file, notifications, logging |
 | App | `Sources/App/` | `QuotaBarApp` (composition root), popover and settings views, `AppSettings`, themes, `StatusBarIconDriver` |
 
 - `QuotaMonitor` is the single source of truth. Views read it directly; there is no view model.
-- `QuotaMonitor.refresh(force:)` refreshes all enabled providers concurrently, skips a snapshot younger than `minimumSnapshotAge` (60 s) unless forced, and joins a refresh already in flight. The popover, the refresh button (`force: true`), the background loop and the feed all go through it.
-- `ClaudeAPIUsageProbe` also caches its snapshot for `snapshotCacheTTL` (300 s), even on a forced refresh, because the usage endpoint rate-limits hard.
-- Muse persists its per-login cooldown and last quota observation under `~/.quotabar/muse`; a failed refresh keeps any unexpired observation visible with the failure in `lastError`, including after restart. Its CLI OAuth record must also contain an already-issued `providers.meta.api_key`; QuotaBar deliberately does not invoke Muse's undocumented key-issuance endpoint.
-- `UsageQuota.status` is pace-aware, so the popover, alerts and feed agree on healthy/warning/critical/depleted.
-- A quota is a percent meter, a balance meter (`balanceRemaining`/`balanceUsed`/`balanceCap` in `usd` or `credits`), or a units count (`unitsUsed`/`unitsLimit`). Probes set `resetsAt`; reset text is formatted once, at the edge.
+- `QuotaMonitor.refresh(force:)` refreshes all enabled providers concurrently, skips a snapshot younger than `minimumSnapshotAge` (60 s) unless forced, and joins a refresh already in flight. The popover, the refresh button (`force: true`) and the background loop all go through it.
+- `FeedClient` shares one in-flight `GET /quotas` across all five probes of a refresh and reuses a response younger than 5 s. `FeedUsageProbe` maps its provider's `QuotaFeedProviderDTO` to a `UsageSnapshot` (quota keys invert `QuotaType.quotaKey`; tier becomes `AccountTier.custom`).
+- `UsageQuota.status` is pace-aware, so the popover and alerts agree with the feed on healthy/warning/critical/depleted.
+- A quota is a percent meter, a balance meter (`balanceRemaining`/`balanceUsed`/`balanceCap` in `usd` or `credits`), or a units count (`unitsUsed`/`unitsLimit`). quotad sets `resetsAt`; reset text is formatted once, at the edge.
 
 ## Adding a provider
 
-Every provider is the one `AIProvider` class; what differs is its `UsageProbe`. Use the `add-provider` skill (`.claude/skills/add-provider/SKILL.md`). In short:
+Add the probe and credentials to `quotad/` first. On the Swift side every provider is the one `AIProvider` class; what differs is only the feed id:
 
-1. Write the probe test-first in `Sources/Infrastructure/<Name>/`, with a static parser tested on a captured response and the HTTP call tested through `MockNetworkClient`. Reuse `NetworkClient.send(_:label:)` and `parseISO8601` from `Shared/ProbeHelpers.swift`.
-2. Register it with one line in the `providers` list in `Sources/App/QuotaBarApp.swift`.
-3. Add its colour, symbol and icon asset to `Sources/App/Views/ProviderVisualIdentity.swift` and `Assets.xcassets`.
+1. Register it with one line in the `providers` list in `Sources/App/QuotaBarApp.swift`.
+2. Add its colour, symbol and icon asset to `Sources/App/Views/ProviderVisualIdentity.swift` and `Assets.xcassets`.
 
-Add a settings sub-protocol of `ProviderSettingsRepository` only when the provider needs its own setting. API keys (OpenRouter is next) belong in the Keychain, in items QuotaBar creates and reads with `SecItem*`, not in the settings file or UserDefaults. That credential store does not exist yet; the first API-key provider builds it. Muse uses the CLI's existing OAuth file; its inference key alone cannot fetch subscription quota.
+Add a settings sub-protocol of `ProviderSettingsRepository` only when the provider needs its own setting.
 
 ## Settings
 
@@ -50,22 +46,20 @@ One JSON file, `~/.quotabar/settings.json`, modelled by the Codable `SettingsFil
 | `app.themeMode` | `dark` or `light` |
 | `app.backgroundSyncEnabled`, `app.backgroundSyncInterval` | background refresh loop (60 s floor, doubled on battery) |
 | `app.quotaAlertsEnabled` | system notifications when a quota's status worsens |
-| `feed.enabled`, `feed.port` | localhost feed (default off, port 8787) |
+| `feed.port` | quotad's localhost feed port (default 8787); `feed.enabled` is owned by quotad and the app never writes it |
 | `providers.<id>.isEnabled` | per-provider toggle |
 
 Keys the struct does not model are dropped on the next write. Migrations run at load: `~/.claudebar/settings.json` moves to the new path once if the new file is missing, and an old `mcp` section is read as `feed` when `feed` is absent.
 
 ## Quota feed
 
-When `feed.enabled` is on, `FeedServerController` runs `QuotaHTTPServer` on `127.0.0.1:<feed.port>` (loopback only; requests whose `Host` is not `127.0.0.1` or `localhost` are rejected).
+quotad serves the feed on `127.0.0.1:<feed.port>` (`/quotas`, `/hooks/session-start`, `/hooks/prompt`); the app is a read-only client via `FeedClient`/`FeedUsageProbe` in `Sources/Infrastructure/Feed/`. The wire types stay in `Sources/Infrastructure/Server/QuotaFeedDTO.swift` so the DTO shape cannot drift from what quotad serves.
 
-| Endpoint | Does |
-|----------|------|
-| `GET /quotas` | refreshes through the monitor (waits at most 20 s), then returns `QuotaFeedDTO` JSON |
-| `POST /hooks/session-start` | Claude Code SessionStart hook: the cached feed as context text |
-| `POST /hooks/prompt` | Claude Code UserPromptSubmit hook: speaks only when a bucket got worse this session |
+`/quotas` has two other consumers, the pi status extension at `~/work/pi-extensions/extensions/status/quota.ts` and the agent script `~/.agents/bin/quota` (behind the `quota` skill); change both in step with any change to the DTO shape.
 
-The hooks never trigger a probe. `/quotas` has two other consumers, the pi status extension at `~/work/pi-extensions/extensions/status/quota.ts` and the agent script `~/.agents/bin/quota` (behind the `quota` skill); change both in step with any change to the DTO shape.
+## Shipping quotad
+
+A fresh install just works: the app carries quotad and macOS keeps it running. A build script phase on the `QuotaBar` target (`Project.swift`) compiles `quotad/` with `CGO_ENABLED=0 go build -trimpath -ldflags='-s -w'` per arch in `$ARCHS`, lipos, writes `Contents/MacOS/quotad`, copies `Sources/App/LaunchAgents/com.aakshintala.quotad.plist` to `Contents/Library/LaunchAgents/`, and signs the binary (`--timestamp` only for real identities). `QuotadService` (`Sources/Infrastructure/Quotad/`) registers the agent via `SMAppService` at launch and falls back to a `~/.local/bin` + `~/Library/LaunchAgents` self-install when registration fails without needing approval; `needsApproval` shows an "Allow QuotaBar in System Settings › General › Login Items" banner in the popover and settings. Release signs Developer ID Application, team `936XPH47M9`, hardened runtime; Debug stays ad-hoc (`-`) so tests and CI need no certificate. `quotad/deploy/mac-deploy.sh` is gone (Linux `linux-deploy.sh`/`quotad.service` remain).
 
 ## Themes
 
@@ -95,7 +89,7 @@ tuist build QuotaBar -C Release # Release: QuotaBar.app, executable Contents/Mac
 
 Run tests only through `xcodebuild` as above. `tuist test` regenerates the scheme without its test action, runs nothing and exits 0, a silent false pass; if it has been run, `tuist generate --no-open` restores the scheme.
 
-Green is `** TEST SUCCEEDED **` with no `✘`. xcodebuild prints one `Test run with N tests` line per bundle; the suite total is their sum (343 as of 2026-09-26: 18 + 141 + 184). A run with no such lines ran nothing. Record the new total in commit messages.
+Green is `** TEST SUCCEEDED **` with no `✘`. xcodebuild prints one `Test run with N tests` line per bundle; the suite total is their sum (192: 142 + 34 + 16 for DomainTests, InfrastructureTests, AcceptanceTests). A run with no such lines ran nothing. Record the new total in commit messages.
 
 Tests are Swift Testing (`@Test`, `#expect`) in Chicago style: stub `@Mockable` protocols to return data and assert on resulting state; use `verify()` only at real boundaries. Shared fixtures live in `Tests/Support/`.
 

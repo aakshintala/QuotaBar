@@ -1,5 +1,6 @@
 import SwiftUI
 import Domain
+import Infrastructure
 
 /// Codex provider configuration card for SettingsView.
 struct CodexConfigCard: View {
@@ -8,7 +9,7 @@ struct CodexConfigCard: View {
     @Environment(\.appTheme) private var theme
 
     @State private var codexConfigExpanded: Bool = false
-    @State private var hasCredentials = false
+    @State private var availability: FeedProviderAvailability?
 
     var body: some View {
         ConfigCard(isExpanded: $codexConfigExpanded) {
@@ -63,28 +64,55 @@ struct CodexConfigCard: View {
                         .font(.system(size: 10, weight: .semibold, design: theme.fontDesign))
                         .foregroundStyle(theme.textPrimary)
 
-                    Text("Calls the ChatGPT backend API directly using OAuth credentials.")
+                    Text("Quotas come from quotad's local feed; quotad holds the credentials.")
                         .font(.system(size: 9, weight: .medium, design: theme.fontDesign))
                         .foregroundStyle(theme.textTertiary)
                 }
             }
 
             HStack(spacing: 6) {
-                Image(systemName: hasCredentials ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                Image(systemName: availabilityIcon)
                     .font(.system(size: 10))
-                    .foregroundStyle(hasCredentials ? theme.statusHealthy : theme.statusWarning)
+                    .foregroundStyle(availabilityColor)
 
-                Text(hasCredentials ? "OAuth credentials found" : "No OAuth credentials found")
+                Text(availabilityText)
                     .font(.system(size: 9, weight: .semibold, design: theme.fontDesign))
-                    .foregroundStyle(hasCredentials ? theme.statusHealthy : theme.statusWarning)
+                    .foregroundStyle(availabilityColor)
             }
 
-            if !hasCredentials {
+            if availability == .unavailable {
                 Text("Run `codex` in terminal to authenticate, then credentials will be available.")
                     .font(.system(size: 9, weight: .medium, design: theme.fontDesign))
                     .foregroundStyle(theme.textTertiary)
             }
         }
-        .task { hasCredentials = await provider.isAvailable() }
+        .task { availability = await FeedUsageProbe(id: provider.id).availability() }
+    }
+
+    /// Neutral while quotad cannot be reached (or still loading): only a
+    /// reachable feed that omits this id reads as unavailable.
+    private var availabilityIcon: String {
+        switch availability {
+        case .available: "checkmark.circle.fill"
+        case .unavailable: "exclamationmark.triangle.fill"
+        case .unknown, nil: "questionmark.circle.fill"
+        }
+    }
+
+    private var availabilityText: String {
+        switch availability {
+        case .available: "Available via quotad"
+        case .unavailable: "Not available via quotad"
+        case .unknown: "quotad unreachable"
+        case nil: "Checking quotad…"
+        }
+    }
+
+    private var availabilityColor: Color {
+        switch availability {
+        case .available: theme.statusHealthy
+        case .unavailable: theme.statusWarning
+        case .unknown, nil: theme.textTertiary
+        }
     }
 }

@@ -1,0 +1,10 @@
+[Unit]
+Description=quotad quota daemon (Go)
+
+[Service]
+ExecStart=%h/.local/bin/quotad
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

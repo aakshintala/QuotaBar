@@ -19,6 +19,19 @@ jobs:
       - name: Get Swift version
         run: swift --version
 
+      # Go builds the bundled quotad binary in the QuotaBar target's script phase.
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: quotad/go.mod
+
+      - name: Test quotad
+        working-directory: quotad
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race -count=1 ./...
+
       - name: Install Tuist
         run: brew install --cask tuist
 

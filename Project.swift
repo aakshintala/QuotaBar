@@ -67,6 +67,52 @@ let project = Project(
                 "Sources/App/Resources/**",
             ],
             entitlements: .file(path: "Sources/App/entitlements.plist"),
+            scripts: [
+                .pre(
+                    script: """
+                    set -eu
+                    export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+                    if ! command -v go >/dev/null 2>&1; then
+                      echo "error: go not found (looked in /opt/homebrew/bin and /usr/local/bin). Install Go to build quotad." >&2
+                      exit 1
+                    fi
+                    build_dir="${DERIVED_FILE_DIR}/quotad-build"
+                    rm -rf "${build_dir}"
+                    mkdir -p "${build_dir}"
+                    n=0
+                    for arch in ${ARCHS}; do
+                      case "${arch}" in
+                        arm64) goarch=arm64 ;;
+                        x86_64) goarch=amd64 ;;
+                        *) echo "error: unsupported ARCHS entry '${arch}' for quotad build" >&2; exit 1 ;;
+                      esac
+                      (cd "${SRCROOT}/quotad" && CGO_ENABLED=0 GOOS=darwin GOARCH=$goarch go build -trimpath -ldflags='-s -w' -o "${build_dir}/quotad-${goarch}" .)
+                      n=$((n + 1))
+                    done
+                    dest="${TARGET_BUILD_DIR}/${EXECUTABLE_FOLDER_PATH}"
+                    mkdir -p "${dest}" "${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchAgents"
+                    if [ "${n}" -gt 1 ]; then
+                      lipo -create "${build_dir}"/quotad-* -output "${dest}/quotad"
+                    else
+                      cp "${build_dir}"/quotad-* "${dest}/quotad"
+                    fi
+                    chmod +x "${dest}/quotad"
+                    cp "${SRCROOT}/Sources/App/LaunchAgents/com.aakshintala.quotad.plist" \
+                      "${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchAgents/com.aakshintala.quotad.plist"
+                    identity="${EXPANDED_CODE_SIGN_IDENTITY:--}"
+                    if [ "${identity}" = "-" ]; then
+                      codesign --force --options runtime --sign "${identity}" "${dest}/quotad"
+                    else
+                      codesign --force --options runtime --timestamp --sign "${identity}" "${dest}/quotad"
+                    fi
+                    """,
+                    name: "Build and sign bundled quotad",
+                    // Runs on every build: Xcode tracks a directory input by the
+                    // directory's own mtime, so edits to .go files never retrigger
+                    // it. Go's build cache keeps an unchanged rebuild near a second.
+                    basedOnDependencyAnalysis: false
+                ),
+            ],
             dependencies: [
                 .target(name: "Domain"),
                 .target(name: "Infrastructure"),
@@ -81,6 +127,12 @@ let project = Project(
                 ],
                 debug: [
                     "SWIFT_ACTIVE_COMPILATION_CONDITIONS": "DEBUG",
+                ],
+                release: [
+                    "CODE_SIGN_IDENTITY": "Developer ID Application",
+                    "DEVELOPMENT_TEAM": "936XPH47M9",
+                    "CODE_SIGN_STYLE": "Manual",
+                    "ENABLE_HARDENED_RUNTIME": "YES",
                 ]
             )
         ),
