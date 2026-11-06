@@ -6,6 +6,7 @@ import Infrastructure
 struct SettingsContentView: View {
     @Binding var showSettings: Bool
     let monitor: QuotaMonitor
+    var quotadService: QuotadService?
     @Environment(\.appTheme) private var theme
     @State private var settings = AppSettings.shared
 
@@ -28,6 +29,10 @@ struct SettingsContentView: View {
 
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 12) {
+                    if let quotadService, quotadService.state == .needsApproval {
+                        QuotadApprovalBanner(quotadService: quotadService)
+                    }
+
                     themeCard
                     providersCard
                     generalCard

@@ -57,6 +57,10 @@ quotad serves the feed on `127.0.0.1:<feed.port>` (`/quotas`, `/hooks/session-st
 
 `/quotas` has two other consumers, the pi status extension at `~/work/pi-extensions/extensions/status/quota.ts` and the agent script `~/.agents/bin/quota` (behind the `quota` skill); change both in step with any change to the DTO shape.
 
+## Shipping quotad
+
+A fresh install just works: the app carries quotad and macOS keeps it running. A build script phase on the `QuotaBar` target (`Project.swift`) compiles `quotad/` with `CGO_ENABLED=0 go build -trimpath -ldflags='-s -w'` per arch in `$ARCHS`, lipos, writes `Contents/MacOS/quotad`, copies `Sources/App/LaunchAgents/com.aakshintala.quotad.plist` to `Contents/Library/LaunchAgents/`, and signs the binary (`--timestamp` only for real identities). `QuotadService` (`Sources/Infrastructure/Quotad/`) registers the agent via `SMAppService` at launch and falls back to a `~/.local/bin` + `~/Library/LaunchAgents` self-install when registration fails without needing approval; `needsApproval` shows an "Allow QuotaBar in System Settings › General › Login Items" banner in the popover and settings. Release signs Developer ID Application, team `936XPH47M9`, hardened runtime; Debug stays ad-hoc (`-`) so tests and CI need no certificate. `quotad/deploy/mac-deploy.sh` is gone (Linux `linux-deploy.sh`/`quotad.service` remain).
+
 ## Themes
 
 `AppTheme` is a concrete struct with two values, `AppTheme.dark` and `AppTheme.light` (`Sources/App/Theme/AppTheme.swift`), chosen by `app.themeMode` and passed through the SwiftUI environment. A new theme is a new static value added to `AppTheme.all`.

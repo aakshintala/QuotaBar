@@ -6,6 +6,7 @@ import Infrastructure
 struct PopoverView: View {
     let monitor: QuotaMonitor
     let quotaAlerter: QuotaAlerter
+    var quotadService: QuotadService?
 
     @Environment(\.appTheme) private var theme
     @State private var showSettings = false
@@ -22,7 +23,8 @@ struct PopoverView: View {
             if showSettings {
                 SettingsContentView(
                     showSettings: $showSettings,
-                    monitor: monitor
+                    monitor: monitor,
+                    quotadService: quotadService
                 )
             } else {
                 VStack(spacing: 0) {
@@ -30,6 +32,12 @@ struct PopoverView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 14)
                         .padding(.bottom, 10)
+
+                    if let quotadService, quotadService.state == .needsApproval {
+                        QuotadApprovalBanner(quotadService: quotadService)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 10)
+                    }
 
                     ScrollView(.vertical, showsIndicators: true) {
                         LazyVStack(alignment: .leading, spacing: 16) {

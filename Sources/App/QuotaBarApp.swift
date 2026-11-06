@@ -22,6 +22,10 @@ struct QuotaBarApp: App {
         JSONSettingsRepository.shared.settings.app.quotaAlertsEnabled
     }
 
+    /// Registers the bundled quotad LaunchAgent at launch (or self-installs
+    /// the fallback); owns the Login Items approval state the UI banners read.
+    private let quotadService: QuotadService
+
     init() {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
@@ -65,6 +69,12 @@ struct QuotaBarApp: App {
         )
         statusItemDriver.startMonitoringLifecycle()
 
+        // macOS keeps the bundled quotad running via SMAppService; when the
+        // agent cannot be registered the service self-installs the fallback.
+        let quotadService = QuotadService()
+        self.quotadService = quotadService
+        Task { @MainActor in await quotadService.ensureRegistered() }
+
         // Note: Notification permission is requested in onAppear, not here
         // Menu bar apps need the run loop to be active before requesting permissions
 
@@ -79,7 +89,8 @@ struct QuotaBarApp: App {
             Group {
                 PopoverView(
                     monitor: monitor,
-                    quotaAlerter: quotaAlerter
+                    quotaAlerter: quotaAlerter,
+                    quotadService: quotadService
                 )
                     .appThemeProvider(themeModeId: settings.themeMode)
             }

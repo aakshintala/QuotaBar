@@ -22,6 +22,12 @@ jobs:
       # sync with those prebuilts and broke the Release build ("SwiftSyntax was
       # created for incompatible target"). Mirrors the passing tests.yml.
 
+      # Go builds the bundled quotad binary in the QuotaBar target's script phase.
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: quotad/go.mod
+
       - name: Install Tuist
         run: brew install --cask tuist
 
@@ -35,4 +41,6 @@ jobs:
         run: xcodebuild build -scheme QuotaBar -workspace QuotaBar.xcworkspace -destination 'platform=macOS,arch=arm64'
 
       - name: Build Release
-        run: xcodebuild build -scheme QuotaBar -workspace QuotaBar.xcworkspace -destination 'platform=macOS,arch=arm64' -configuration Release
+        # Ad-hoc sign on CI: the Release project settings name the Developer ID
+        # identity, which needs the signing certificate the gate never installs.
+        run: xcodebuild build -scheme QuotaBar -workspace QuotaBar.xcworkspace -destination 'platform=macOS,arch=arm64' -configuration Release CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=

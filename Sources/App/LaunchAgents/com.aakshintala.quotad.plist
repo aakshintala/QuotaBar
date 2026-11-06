@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Bundled LaunchAgent for quotad. The build phase in Project.swift copies this
+  into Contents/Library/LaunchAgents/ so SMAppService.agent(plistName:) can
+  register it. BundleProgram is bundle-relative, so the app works wherever it
+  is installed. ProgramArguments[0] is argv[0] ("quotad"); quotad expands the
+  ~ in the log path itself.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.aakshintala.quotad</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/quotad</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>quotad</string>
+		<string>-log</string>
+		<string>~/Library/Logs/QuotaBar/quotad.log</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>com.aakshintala.subscriptionusagebar</string>
+	</array>
+</dict>
+</plist>
