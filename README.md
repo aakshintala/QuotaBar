@@ -24,7 +24,7 @@ QuotaBar reads the credentials each provider's own tool already stores, so there
 | Codex | Codex CLI signed in (`~/.codex/auth.json`) |
 | Cursor | Cursor signed in on this Mac |
 | OpenCode Go | opencode signed in to OpenCode Go (`~/.local/share/opencode/auth.json`) |
-| Muse | Muse CLI OAuth login (`$XDG_CONFIG_HOME/muse/auth.json` or `~/.config/muse/auth.json`; `MUSE_AUTH_PATH` overrides) |
+| Muse | The Muse CLI itself: quotad runs `muse usage --json` (`$MUSE_BIN`, else `~/.local/bin/muse`, else `PATH`) and never reads Muse credentials |
 
 Turn providers on or off in Settings. For Muse, first sign in with `muse login`; QuotaBar reads the CLI's OAuth login read-only and requires the existing `providers.meta.api_key` as evidence that Muse completed its initial onboarding. QuotaBar never calls the undocumented key-issuance endpoint to create that key. A valid OAuth token without this standing key is reported separately with guidance to finish login in Muse. An inference key alone cannot fetch subscription quota. Muse quota requests are limited to one per login every five minutes; Meta may omit usage while its session window is idle. Settings are stored in `~/.quotabar/settings.json` and logs in `~/Library/Logs/QuotaBar/`.
 
