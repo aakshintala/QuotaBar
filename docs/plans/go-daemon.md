@@ -34,7 +34,7 @@ Provider interface: `ID() string`, `Available() bool`, `Fetch(ctx) (Snapshot, er
 
 - `monitor`: refresh enabled providers concurrently; reuse a snapshot under 60 s unless forced; join an in-flight refresh; background loop every `app.backgroundSyncInterval` (60 s floor). Status logic from `Sources/Domain/Provider/QuotaStatus.swift` and `UsageQuota.swift`.
 - `feed`: 127.0.0.1:`feed.port` (8787), reject `Host` other than 127.0.0.1/localhost. `GET /quotas` (refresh, wait at most 20 s), `POST /hooks/session-start`, `POST /hooks/prompt`; byte-compatible with `Sources/Infrastructure/Server/` (golden test against JSON captured from the live Swift feed).
-- Tokens: Claude and Codex refresh and write back as Swift does (file: temp + fsync + rename, 0600; Mac Claude Keychain: `security -i` over stdin). Cursor, OpenCode Go, Muse read only.
+- Tokens: Claude and Codex refresh and write back as Swift does (file: temp + fsync + rename, 0600; Mac Claude Keychain: `security -i` over stdin). Cursor and OpenCode Go read only. Muse credentials are never read: quotad runs `muse usage --json` and the CLI reads its own login.
 - Logs: `log/slog` to stderr; never log tokens.
 
 ## Per-provider fixes from CodexBar (`docs/research/codexbar-provider-reference.md`)
@@ -45,7 +45,7 @@ Provider interface: `ID() string`, `Available() bool`, `Fetch(ctx) (Snapshot, er
 | Codex | session/weekly by window length (300 / 10080 min); expiry from JWT; `CODEX_HOME` |
 | Cursor | cookie from JWT `sub` after last `\|`; `state.vscdb` read-only; Linux `~/.config/cursor/auth.json`; keep Swift's plan-capacity maths |
 | OpenCode Go | `auth.json`, fallback `opencode.db` `credential` table |
-| Muse | Mac: `/usr/bin/security -w` (spike pending on whether access survives token rewrites); Linux: `~/.config/muse/auth.json`; keep cooldown files in `~/.quotabar/muse` |
+| Muse | Run `muse usage --json` (`$MUSE_BIN`, else `~/.local/bin/muse`, else PATH), never the Keychain item or `auth.json`: the CLI's Keychain item trusts only `muse` and is rewritten on each token refresh, so any other reader prompts; keep the cooldown and last reading in `~/.quotabar/muse` |
 
 ## Order of work
 

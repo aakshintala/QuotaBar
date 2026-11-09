@@ -88,7 +88,10 @@ func macOnly() error {
 }
 
 // KeychainRead returns the password of the generic item (service, account).
-// It runs /usr/bin/security with a 10 s timeout.
+// It runs /usr/bin/security with a 10 s timeout. It does not avoid prompts:
+// when the item's ACL does not trust /usr/bin/security, macOS shows a
+// SecurityAgent password dialog for every read. Use it only for items that
+// trust /usr/bin/security, such as the Claude Code item.
 func KeychainRead(service, account string) ([]byte, error) {
 	if err := macOnly(); err != nil {
 		return nil, err
